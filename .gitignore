@@ -16,3 +16,4 @@ build/
 .vscode/
 site/
 tools/sitegen/node_modules/
+Demonstrations+HelloWorlds/CircuitPython/__pycache__/mtm_computer.cpython-310.pyc
