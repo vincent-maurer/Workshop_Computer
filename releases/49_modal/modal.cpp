@@ -25,6 +25,11 @@
 #include "pico/stdlib.h"
 #include <string.h>
 
+// ── Fixed-point DSP infrastructure ──────────────────────────────────────────
+#include "dsp_q15.h"
+#include "svf_q15.h"
+#include "envelope_q15.h"
+
 // ── Constants ───────────────────────────────────────────────────────────────
 
 #define SAMPLE_RATE        48000
@@ -34,13 +39,8 @@
 #define BOOT_SILENCE_SAMP  (SAMPLE_RATE * BOOT_SILENCE_MS / 1000)
 
 // ── Fixed-point helpers ─────────────────────────────────────────────────────
-// Q15: ±1.0 maps to ±32767. Multiply via int64 to avoid overflow.
-// All knob values (0–4095) are scaled to Q15 (0–32767) for parameter use.
-
-/// Multiply two Q15 values, returning Q15 result.
-static inline int32_t mul_q15(int32_t a, int32_t b) {
-    return (int32_t)(((int64_t)a * b) >> 15);
-}
+// mul_q15() and other core Q15 ops are in dsp_q15.h.
+// Knob scaling is project-specific:
 
 /// Scale a raw knob value (0–4095) to Q15 (0–32767), with dead zones at edges.
 /// The pots don't reliably reach 0, so we remap ~14–4095 → 0–32767.

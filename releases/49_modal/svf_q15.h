@@ -1,0 +1,266 @@
+// =============================================================================
+// svf_q15.h — Fixed-point State Variable Filter for Elements port
+//
+// Port of stmlib::Svf to Q15 integer arithmetic.
+// Zero-delay-feedback topology (Vadim Zavalishin / Andrew Simper).
+//
+// The SVF provides simultaneous low-pass, band-pass, and high-pass outputs.
+// It is the core building block of the Elements resonator (one SVF per mode).
+//
+// Coefficients:
+//   g (Q14): frequency coefficient = tan(π * f / sr)
+//   r (Q14): damping = 1/Q
+//   h (Q15): normalization = 1/(1 + r*g + g²)
+//
+// These can be set directly from the pre-computed LUTs in resources_q15.
+// =============================================================================
+
+#ifndef SVF_Q15_H_
+#define SVF_Q15_H_
+
+#include <stdint.h>
+#include "dsp_q15.h"
+
+// ── Filter Mode ─────────────────────────────────────────────────────────────
+enum FilterModeQ15 {
+    FILT_LP = 0,    // Low-pass
+    FILT_BP = 1,    // Band-pass
+    FILT_BPN = 2,   // Band-pass normalized (BP * r)
+    FILT_HP = 3     // High-pass
+};
+
+// ── State Variable Filter ───────────────────────────────────────────────────
+
+struct SvfQ15 {
+    int32_t g;          // Frequency coefficient (Q14)
+    int32_t r;          // Damping 1/Q (Q14)
+    int32_t h;          // Normalization (Q15)
+    int32_t state1;     // Band-pass state (Q15)
+    int32_t state2;     // Low-pass state (Q15)
+    
+    void Init() {
+        g = 0;
+        r = 16384;  // Q14 = 1.0 (moderate damping)
+        h = 16384;  // Q15 = 0.5
+        Reset();
+    }
+    
+    void Reset() {
+        state1 = 0;
+        state2 = 0;
+    }
+    
+    /// Set all three coefficients directly from LUT values.
+    /// g_q14, r_q14 from lut_approx_svf_g/r, h_q15 from lut_approx_svf_h.
+    void SetGRH(int32_t g_q14, int32_t r_q14, int32_t h_q15) {
+        g = g_q14;
+        r = r_q14;
+        h = h_q15;
+    }
+    
+    /// Set frequency (g) and resonance (Q), compute h.
+    /// g_q14: from LUT. resonance_q15: Q factor (higher = more resonant)
+    void SetGQ(int32_t g_q14, int32_t resonance_q15) {
+        g = g_q14;
+        // r = 1/Q in Q14. If resonance_q15 = 32767 (=1.0), r = 16384 (Q14 1.0)
+        // For higher Q, r is smaller.
+        if (resonance_q15 < 328) resonance_q15 = 328;  // Min Q ~0.01, prevent division by 0
+        r = (int32_t)((16384LL * 32767) / resonance_q15);
+        if (r > 32767) r = 32767;
+        
+        // h = 1/(1 + r*g + g²) in Q15
+        // r*g is Q14*Q14 = Q28, shift to Q15 = >>13
+        // g² is Q14*Q14 = Q28, shift to Q15 = >>13
+        int32_t rg = (int32_t)(((int64_t)r * g) >> 13);  // Q15
+        int32_t g2 = (int32_t)(((int64_t)g * g) >> 13);  // Q15
+        int32_t denom = 32767 + rg + g2;
+        if (denom < 1) denom = 1;
+        h = (int32_t)((32767LL * 32767) / denom);
+        if (h > 32767) h = 32767;
+    }
+    
+    /// Set from pre-computed LUT index (0..256).
+    /// Uses the approx SVF tables from resources_q15.
+    void SetFromLUT(int32_t index) {
+        if (index < 0) index = 0;
+        if (index > 256) index = 256;
+        g = lut_approx_svf_g_q14[index];
+        r = lut_approx_svf_r_q14[index];
+        h = lut_approx_svf_h_q15[index];
+    }
+    
+    /// Copy coefficients from another filter
+    void CopyFrom(const SvfQ15 &other) {
+        g = other.g;
+        r = other.r;
+        h = other.h;
+    }
+    
+    // ── Single-sample processing ────────────────────────────────────────
+    
+    /// Process one sample, returning the selected filter mode output.
+    /// Input x is Q15. Returns Q15.
+    int32_t __not_in_flash_func(Process)(int32_t x, FilterModeQ15 mode) {
+        // hp = (in - r*s1 - g*s1 - s2) * h
+        // All multiplies: Q15 * Q14 for g/r terms, Q15 * Q15 for h
+        int32_t rs1 = (int32_t)(((int64_t)r * state1) >> 14);  // Q14*Q15>>14 = Q15
+        int32_t gs1 = (int32_t)(((int64_t)g * state1) >> 14);
+        int32_t hp = (int32_t)(((int64_t)(x - rs1 - gs1 - state2) * h) >> 15);
+        
+        int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
+        int32_t bp = gbp + state1;
+        state1 = gbp + bp;  // Double integration
+        
+        int32_t glp = (int32_t)(((int64_t)g * bp) >> 14);
+        int32_t lp = glp + state2;
+        state2 = glp + lp;
+        
+        switch (mode) {
+            case FILT_LP:  return lp;
+            case FILT_BP:  return bp;
+            case FILT_BPN: return (int32_t)(((int64_t)bp * r) >> 14);
+            case FILT_HP:  return hp;
+            default:       return lp;
+        }
+    }
+    
+    /// Process one sample, returning both BP and LP simultaneously.
+    /// Used by the resonator where we need both for output mixing.
+    void __not_in_flash_func(Process2)(int32_t x, int32_t &out_bp, int32_t &out_lp) {
+        int32_t rs1 = (int32_t)(((int64_t)r * state1) >> 14);
+        int32_t gs1 = (int32_t)(((int64_t)g * state1) >> 14);
+        int32_t hp = (int32_t)(((int64_t)(x - rs1 - gs1 - state2) * h) >> 15);
+        
+        int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
+        int32_t bp = gbp + state1;
+        state1 = gbp + bp;
+        
+        int32_t glp = (int32_t)(((int64_t)g * bp) >> 14);
+        int32_t lp = glp + state2;
+        state2 = glp + lp;
+        
+        out_bp = bp;
+        out_lp = lp;
+    }
+    
+    // ── Block processing ────────────────────────────────────────────────
+    
+    /// Process a block of samples, accumulating the result into the output.
+    /// gain1/gain2 are Q15 mixing gains for two output buses.
+    /// This is the pattern used by the resonator: each mode's SVF adds its
+    /// contribution to the output with position-dependent L/R gains.
+    void __not_in_flash_func(ProcessAdd)(const int32_t* in, 
+                                         int32_t* out1, int32_t* out2,
+                                         int32_t size,
+                                         int32_t gain1_q15, int32_t gain2_q15,
+                                         FilterModeQ15 mode) {
+        int32_t s1 = state1;
+        int32_t s2 = state2;
+        
+        while (size--) {
+            int32_t rs1 = (int32_t)(((int64_t)r * s1) >> 14);
+            int32_t gs1 = (int32_t)(((int64_t)g * s1) >> 14);
+            int32_t hp = (int32_t)(((int64_t)(*in - rs1 - gs1 - s2) * h) >> 15);
+            
+            int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
+            int32_t bp = gbp + s1;
+            s1 = gbp + bp;
+            
+            int32_t glp = (int32_t)(((int64_t)g * bp) >> 14);
+            int32_t lp = glp + s2;
+            s2 = glp + lp;
+            
+            int32_t value;
+            switch (mode) {
+                case FILT_LP:  value = lp; break;
+                case FILT_BP:  value = bp; break;
+                case FILT_BPN: value = (int32_t)(((int64_t)bp * r) >> 14); break;
+                case FILT_HP:  value = hp; break;
+                default:       value = lp; break;
+            }
+            
+            *out1 += mul_q15(value, gain1_q15);
+            *out2 += mul_q15(value, gain2_q15);
+            ++out1;
+            ++out2;
+            ++in;
+        }
+        
+        state1 = s1;
+        state2 = s2;
+    }
+    
+    /// Simple block process: filter in-place.
+    void __not_in_flash_func(ProcessBlock)(int32_t* in_out, int32_t size, FilterModeQ15 mode) {
+        int32_t s1 = state1;
+        int32_t s2 = state2;
+        
+        while (size--) {
+            int32_t rs1 = (int32_t)(((int64_t)r * s1) >> 14);
+            int32_t gs1 = (int32_t)(((int64_t)g * s1) >> 14);
+            int32_t hp = (int32_t)(((int64_t)(*in_out - rs1 - gs1 - s2) * h) >> 15);
+            
+            int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
+            int32_t bp = gbp + s1;
+            s1 = gbp + bp;
+            
+            int32_t glp = (int32_t)(((int64_t)g * bp) >> 14);
+            int32_t lp = glp + s2;
+            s2 = glp + lp;
+            
+            switch (mode) {
+                case FILT_LP:  *in_out = lp; break;
+                case FILT_BP:  *in_out = bp; break;
+                case FILT_BPN: *in_out = (int32_t)(((int64_t)bp * r) >> 14); break;
+                case FILT_HP:  *in_out = hp; break;
+                default:       *in_out = lp; break;
+            }
+            ++in_out;
+        }
+        
+        state1 = s1;
+        state2 = s2;
+    }
+};
+
+// ── One-Pole Filter (Q15) ───────────────────────────────────────────────────
+// Simple first-order low-pass/high-pass for parameter smoothing and
+// damping filters.
+
+struct OnePoleQ15 {
+    int32_t g;      // Frequency coefficient (Q14)
+    int32_t gi;     // 1/(1+g) normalization (Q15)
+    int32_t state;  // Filter state (Q15)
+    
+    void Init() {
+        g = 164;    // ~0.01 in Q14
+        gi = 32567;
+        state = 0;
+    }
+    
+    void Reset() { state = 0; }
+    
+    /// Set frequency from a Q14 g coefficient
+    void SetG(int32_t g_q14) {
+        g = g_q14;
+        // gi = 1/(1+g) in Q15
+        int32_t denom = 16384 + g;  // Q14
+        gi = (int32_t)((16384LL * 32767) / denom);
+        if (gi > 32767) gi = 32767;
+    }
+    
+    /// Low-pass: returns LP output
+    int32_t ProcessLP(int32_t x) {
+        int32_t lp = (int32_t)(((int64_t)(((int64_t)g * x) >> 14) + state) * gi >> 15);
+        state = (int32_t)(((int64_t)g * (x - lp)) >> 14) + lp;
+        return lp;
+    }
+    
+    /// High-pass: returns HP output
+    int32_t ProcessHP(int32_t x) {
+        int32_t lp = ProcessLP(x);
+        return x - lp;
+    }
+};
+
+#endif  // SVF_Q15_H_
