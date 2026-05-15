@@ -29,6 +29,7 @@
 #include "dsp_q15.h"
 #include "svf_q15.h"
 #include "envelope_q15.h"
+#include "exciter_q15.h"
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -152,18 +153,42 @@ volatile int32_t    currentModel   = MODEL_MODAL;
 
 // ── Core 1 DSP Engine ──────────────────────────────────────────────────────
 // This function runs on Core 1 in an infinite loop. It waits for trigger
-// words from Core 0, processes one block of DSP, and sends audio back.
+// words from Core 0, processes one sample of DSP, and sends audio back.
 //
-// Currently a placeholder that generates silence. The actual DSP will be
-// added in Phases 2-4 (exciter, resonator, reverb).
+// Phase 2: Exciter generates the excitation signal.
+// Phase 3 will add the resonator; for now we output the raw excitation.
+
+// Core 1 persistent state — lives outside the function to avoid stack pressure
+static ExciterQ15 bow_exciter;
+static ExciterQ15 blow_exciter;
+static ExciterQ15 strike_exciter;
+static EnvelopeQ15 envelope;
+
+// Smoothed parameters for zipper-free interpolation
+static int32_t smooth_strength = 0;
+static int32_t smooth_env_value = 0;
 
 static void __not_in_flash_func(core1_dsp_loop)() {
+    // Initialize exciters with different PRNG seeds
+    bow_exciter.Init(12345);
+    blow_exciter.Init(67890);
+    strike_exciter.Init(24680);
+    envelope.Init();
+    
+    // Set default exciter models
+    bow_exciter.model = EXCITER_Q15_FLOW;
+    bow_exciter.parameter = 22938;  // ~0.7
+    bow_exciter.timbre = 16384;     // ~0.5
+    
+    blow_exciter.model = EXCITER_Q15_NOISE;
+    
+    strike_exciter.model = EXCITER_Q15_MALLET;
+    
     while (true) {
         // Wait for work from Core 0
         uint32_t flags = multicore_fifo_pop_blocking();
 
         if (!(flags & FIFO_FLAG_ACTIVE)) {
-            // Not a real work packet — just echo silence
             multicore_fifo_push_blocking(0);
             multicore_fifo_push_blocking(0);
             continue;
@@ -193,7 +218,6 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         // Page 4: Resonator Space
         int32_t position     = params[4].pMain;
         int32_t space        = params[4].pX;
-        // int32_t model_sel = params[4].pY;  // Read via currentModel
 
         // Page 5: Performance
         int32_t pitch_coarse = params[5].pMain;
@@ -210,26 +234,146 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         bool rising  = (flags & FIFO_FLAG_RISING)  != 0;
         bool falling = (flags & FIFO_FLAG_FALLING) != 0;
 
-        // ── Suppress unused variable warnings during skeleton phase ─────
-        (void)strike_level; (void)blow_level; (void)bow_level;
-        (void)strike_timbre; (void)blow_timbre; (void)bow_timbre;
-        (void)strike_meta; (void)blow_meta; (void)env_shape;
-        (void)geometry; (void)brightness; (void)damping;
-        (void)position; (void)space;
-        (void)pitch_coarse; (void)strength; (void)fine_tune;
-        (void)ext_blow; (void)ext_strike; (void)pitch_cv;
-        (void)gate; (void)rising; (void)falling;
+        // Suppress unused warnings for parameters not yet used (Phase 3/4)
+        (void)geometry; (void)position; (void)space;
+        (void)pitch_coarse; (void)fine_tune; (void)pitch_cv;
 
-        // ── TODO: DSP Processing ────────────────────────────────────────
-        // Phase 2: Exciter → generates excitation signal
-        // Phase 3: Resonator → filters excitation into pitched output
-        // Phase 4: Space/Reverb → adds stereo width and ambience
+        // ── Build gate flags for exciters/envelope ──────────────────────
+        uint8_t env_flags = 0;
+        if (gate)    env_flags |= ENV_FLAG_GATE;
+        if (rising)  env_flags |= ENV_FLAG_RISING;
+        if (falling) env_flags |= ENV_FLAG_FALLING;
+
+        // ── Configure Envelope ──────────────────────────────────────────
+        // env_shape (Q15): 0..13107 = AD, 13107..19660 = ADSR, 19660..32767 = AR
+        // Maps the original Elements envelope shape parameter
+        if (env_shape < 13107) {
+            // Short AD shapes (0..0.4): attack + decay, no sustain
+            // a = shape*0.75 + 0.15 → Q15: shape*24576/32767 + 4915
+            int32_t a = mul_q15(env_shape, 24576) + 4915;
+            int32_t dr = mul_q15(a, 29491);  // a * 1.8 ≈ a * 0.9 * 2
+            envelope.SetADR(a, dr, 0, dr);
+        } else if (env_shape < 19660) {
+            // ADSR with increasing sustain (0.4..0.6)
+            int32_t s = (env_shape - 13107) * 5;  // scale to 0..32767
+            if (s > 32767) s = 32767;
+            envelope.SetADSR(14746, 26542, s, 26542);  // a=0.45, dr=0.81
+        } else {
+            // Long AR shapes (0.6..1.0): full sustain
+            int32_t a = mul_q15(32767 - env_shape, 24576) + 4915;
+            int32_t dr = mul_q15(a, 29491);
+            envelope.SetADSR(a, dr, 32767, dr);
+        }
+
+        // Process envelope
+        int32_t env_value = envelope.Process(env_flags);
+        
+        // Smooth envelope to avoid zipper noise
+        smooth_env_value += (env_value - smooth_env_value) >> 3;
+
+        // ── Configure Exciters ──────────────────────────────────────────
+        
+        // Brightness factor: resonator brightness modulates exciter timbre
+        // brightness_factor = 0.4 + 0.6 * brightness → Q15: 13107 + brightness * 0.6
+        int32_t brightness_factor = 13107 + mul_q15(brightness, 19661);
+        
+        // Bow: Flow model, timbre controlled by bow_timbre * brightness
+        bow_exciter.timbre = mul_q15(bow_timbre, brightness_factor);
+        bow_exciter.model = EXCITER_Q15_FLOW;
+        bow_exciter.parameter = 22938;  // ~0.7 turbulence
+        
+        // Blow: Noise model, meta controls parameter
+        blow_exciter.parameter = blow_meta;
+        blow_exciter.timbre = blow_timbre;
+        blow_exciter.model = EXCITER_Q15_NOISE;
+        
+        // Strike: Use meta to select model (Mallet → Plectrum → Particles)
+        // strike_meta <= 0.4: scale to 0..0.25 range
+        // strike_meta > 0.4: scale to 0.25..1.0 range
+        int32_t adjusted_meta;
+        if (strike_meta <= 13107) {
+            adjusted_meta = mul_q15(strike_meta, 20480);  // * 0.625
+        } else {
+            adjusted_meta = mul_q15(strike_meta, 40960) - 8192;  // * 1.25 - 0.25
+        }
+        if (adjusted_meta < 0) adjusted_meta = 0;
+        if (adjusted_meta > 32767) adjusted_meta = 32767;
+        strike_exciter.SetMeta(adjusted_meta, EXCITER_Q15_MALLET, EXCITER_Q15_PARTICLES);
+        strike_exciter.timbre = strike_timbre;
+
+        // ── Process Exciters ────────────────────────────────────────────
+        
+        int32_t bow_out    = bow_exciter.Process(env_flags);
+        int32_t blow_out   = blow_exciter.Process(env_flags);
+        int32_t strike_out = strike_exciter.Process(env_flags);
+
+        // ── Smooth Strength ─────────────────────────────────────────────
+        // Strength from knob + CV2
+        int32_t total_strength = strength + cv2_strength;
+        if (total_strength < 0) total_strength = 0;
+        if (total_strength > 32767) total_strength = 32767;
+        smooth_strength += (total_strength - smooth_strength) >> 4;
+        
+        // Accent gain from strength
+        int32_t accent = AccentGainQ14(smooth_strength);
+
+        // ── Mix Excitation ──────────────────────────────────────────────
+        // Replicate the original mix logic from voice.cc:
         //
-        // For now, pass through a scaled version of external inputs
-        // so we can verify the audio path works.
+        // blow: level < 1.0 → blow * 0.4, level ≥ 1.0 → 0.4
+        //       (tube level for values > 1.0, but tube is omitted for now)
+        // strike: level < 1.0 → strike * level * 1.5, level ≥ 1.0 → strike * 1.5
+        //         bleed: level > 1.0 → raw strike bleeds to output
+        // bow: bow * bow_level * envelope * accent * 0.125
 
-        int32_t outL = ext_blow >> 1;    // Attenuated passthrough
-        int32_t outR = ext_strike >> 1;
+        int32_t e = mul_q15(smooth_env_value, accent);
+
+        // Bow contribution: bow * bow_level * e * 0.125 (>>3)
+        int32_t bow_mix = mul_q15(mul_q15(bow_out, bow_level), e) >> 3;
+
+        // Blow contribution: blow * blow_level_scaled * e + external_blow
+        // blow_level_scaled = min(blow_level * 1.5, 1.0) * 0.4
+        int32_t blow_scaled = mul_q15(blow_level, 13107);  // * 0.4
+        int32_t blow_mix = mul_q15(blow_out, blow_scaled);
+        blow_mix = mul_q15(blow_mix, e) + (ext_blow >> 2);
+
+        // Strike contribution: strike * accent * strike_level_scaled + external
+        // strike_level_scaled = min(strike_level * 1.25, 1.0) * 1.5
+        int32_t strike_lvl_adj = mul_q15(strike_level, 40960);  // * 1.25
+        if (strike_lvl_adj > 32767) strike_lvl_adj = 32767;
+        int32_t strike_scaled = mul_q15(strike_lvl_adj, 49152);  // * 1.5
+        int32_t strike_mix = mul_q15(mul_q15(strike_out, accent), strike_scaled);
+        strike_mix += ext_strike >> 2;
+
+        // Strike bleed: raw strike signal bleeds to output at high levels
+        int32_t strike_bleed = 0;
+        if (strike_level > 26214) {  // > 0.8 in Q15
+            strike_bleed = mul_q15(strike_out, (strike_level - 26214) * 5);
+        }
+
+        // Sum all excitation sources
+        int32_t excitation = bow_mix + blow_mix + strike_mix;
+
+        // ── Damping from Exciters ───────────────────────────────────────
+        // Strike exciter provides damping feedback (palm mute on release)
+        int32_t total_damping = damping;
+        total_damping -= mul_q15(strike_exciter.damping, strike_lvl_adj) >> 3;
+        // Bow damping: when bow is not pressed, it damps
+        int32_t bow_strength_inv = 32767 - mul_q15(bow_level, smooth_env_value);
+        total_damping -= mul_q15(bow_strength_inv, bow_level) >> 4;
+        if (total_damping < 0) total_damping = 0;
+        (void)total_damping;  // Will be used by resonator in Phase 3
+
+        // ── Output ──────────────────────────────────────────────────────
+        // Until the resonator is implemented (Phase 3), output the raw 
+        // excitation signal so we can hear/test the exciters.
+        // Scale down to avoid clipping and add strike bleed.
+        int32_t outL = (excitation >> 1) + strike_bleed;
+        int32_t outR = outL;  // Mono until resonator provides stereo
+
+        // Soft clip
+        outL = sat_q15(outL);
+        outR = sat_q15(outR);
 
         // ── Send Results Back ───────────────────────────────────────────
         multicore_fifo_push_blocking((uint32_t)outL);
