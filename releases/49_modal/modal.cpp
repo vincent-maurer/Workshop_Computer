@@ -282,14 +282,15 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         bow_exciter.model = EXCITER_Q15_FLOW;
         bow_exciter.parameter = 22938;  // ~0.7 turbulence
         
-        // Blow: Noise model, meta controls parameter
+        // Blow: Granular sample player (matching original)
         blow_exciter.parameter = blow_meta;
         blow_exciter.timbre = blow_timbre;
-        blow_exciter.model = EXCITER_Q15_NOISE;
+        blow_exciter.signature = params[2].pX;  // Signature from blow meta
+        blow_exciter.model = EXCITER_Q15_GRANULAR;
         
-        // Strike: Use meta to select model (Mallet → Plectrum → Particles)
-        // strike_meta <= 0.4: scale to 0..0.25 range
-        // strike_meta > 0.4: scale to 0.25..1.0 range
+        // Strike: Use meta to select model (Sample→Mallet→Plectrum→Particles)
+        // strike_meta <= 0.4: scale to 0..0.25 range (sample player region)
+        // strike_meta > 0.4: scale to 0.25..1.0 range (synth models)
         int32_t adjusted_meta;
         if (strike_meta <= 13107) {
             adjusted_meta = mul_q15(strike_meta, 20480);  // * 0.625
@@ -298,8 +299,9 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         }
         if (adjusted_meta < 0) adjusted_meta = 0;
         if (adjusted_meta > 32767) adjusted_meta = 32767;
-        strike_exciter.SetMeta(adjusted_meta, EXCITER_Q15_MALLET, EXCITER_Q15_PARTICLES);
+        strike_exciter.SetMeta(adjusted_meta, EXCITER_Q15_SAMPLE, EXCITER_Q15_PARTICLES);
         strike_exciter.timbre = strike_timbre;
+        strike_exciter.signature = params[2].pMain;  // Signature from strike meta
 
         // ── Process Exciters ────────────────────────────────────────────
         

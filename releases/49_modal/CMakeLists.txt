@@ -10,6 +10,7 @@ add_executable(modal)
 target_sources(modal PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}/modal.cpp
     ${CMAKE_CURRENT_LIST_DIR}/resources_q15.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/samples_flash.cpp
 )
 
 # Include the current directory and the ComputerCard library

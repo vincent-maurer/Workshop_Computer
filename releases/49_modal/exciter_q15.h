@@ -5,15 +5,15 @@
 // Generates excitation signals that drive the resonator/string models.
 //
 // Available models:
+//   GRANULAR  — Granular sample player from flash noise texture.
+//   SAMPLE    — Sample player: 9 percussion samples crossfaded from flash.
 //   MALLET    — Single impulse filtered through LP. Classic percussion.
 //   PLECTRUM  — Delayed snap after initial dip. Guitar-pick feel.
-//   NOISE     — Filtered white noise (resonant if parameter > 0).
-//   FLOW      — Chaotic particle-based wind/bow noise.
 //   PARTICLES — Stochastic impulse cloud with evolving density.
+//   FLOW      — Chaotic particle-based wind/bow noise.
+//   NOISE     — Filtered white noise (resonant if parameter > 0).
 //
-// Note: GranularSamplePlayer and SamplePlayer are omitted — they require
-// large flash-resident sample arrays that won't fit in RP2040 RAM, and
-// the Granular model's pitch-shifting uses float-intensive interpolation.
+// Sample data lives in flash via XIP (__in_flash()) — zero RAM cost.
 //
 // Original code: Émilie Gillet (Mutable Instruments) — MIT License
 // =============================================================================
@@ -26,14 +26,17 @@
 #include "dsp_q15.h"
 #include "svf_q15.h"
 #include "resources_q15.h"
+#include "samples_flash.h"
 
-// ── Exciter Model ───────────────────────────────────────────────────────────
+// ── Exciter Model (order matches original for meta sweep) ───────────────────
 enum ExciterModelQ15 {
-    EXCITER_Q15_MALLET    = 0,
-    EXCITER_Q15_PLECTRUM  = 1,
-    EXCITER_Q15_PARTICLES = 2,
-    EXCITER_Q15_FLOW      = 3,
-    EXCITER_Q15_NOISE     = 4,
+    EXCITER_Q15_GRANULAR  = 0,  // Granular sample player (noise texture)
+    EXCITER_Q15_SAMPLE    = 1,  // Sample player (9 percussion hits)
+    EXCITER_Q15_MALLET    = 2,
+    EXCITER_Q15_PLECTRUM  = 3,
+    EXCITER_Q15_PARTICLES = 4,
+    EXCITER_Q15_FLOW      = 5,
+    EXCITER_Q15_NOISE     = 6,
     EXCITER_Q15_NUM_MODELS
 };
 
@@ -56,6 +59,9 @@ struct ExciterQ15 {
     uint32_t delay;
     uint32_t plectrum_delay;
     
+    // Sample player state
+    uint32_t phase;          // Phase accumulator for sample playback
+    
     // PRNG seed (unique per exciter instance)
     uint32_t rng_seed;
     
@@ -71,6 +77,7 @@ struct ExciterQ15 {
         particle_range = 32767;  // 1.0
         delay = 0;
         plectrum_delay = 0;
+        phase = 0;
         rng_seed = seed_init;
     }
     
@@ -123,8 +130,11 @@ struct ExciterQ15 {
     int32_t __not_in_flash_func(Process)(uint8_t flags) {
         damping = 0;
         int32_t out = 0;
+        bool skip_filter = false;
         
         switch (model) {
+            case EXCITER_Q15_GRANULAR:  out = ProcessGranular(flags); skip_filter = true; break;
+            case EXCITER_Q15_SAMPLE:    out = ProcessSample(flags); skip_filter = true; break;
             case EXCITER_Q15_MALLET:    out = ProcessMallet(flags); break;
             case EXCITER_Q15_PLECTRUM:  out = ProcessPlectrum(flags); break;
             case EXCITER_Q15_PARTICLES: out = ProcessParticles(flags); break;
@@ -133,8 +143,10 @@ struct ExciterQ15 {
             default: break;
         }
         
-        // Apply LP filter (all models except granular/sample)
-        // Set filter based on timbre
+        // Sample-based models have their own filtering
+        if (skip_filter) return out;
+        
+        // Apply LP filter for synthesis models
         int32_t cutoff_idx = (timbre * 256) >> 15;
         if (cutoff_idx > 256) cutoff_idx = 256;
         
@@ -144,7 +156,6 @@ struct ExciterQ15 {
             if (res_idx > 256) res_idx = 256;
             lp.g = lut_approx_svf_g_q14[cutoff_idx];
             lp.r = lut_approx_svf_r_q14[res_idx];
-            // Compute h from g and r
             int32_t rg = (int32_t)(((int64_t)lp.r * lp.g) >> 13);
             int32_t g2 = (int32_t)(((int64_t)lp.g * lp.g) >> 13);
             int32_t denom = 32767 + rg + g2;
@@ -326,6 +337,137 @@ struct ExciterQ15 {
     int32_t __not_in_flash_func(ProcessNoise)(uint8_t flags) {
         (void)flags;
         return RandomS();  // -16384..16383
+    }
+    
+    // ── Granular Sample Player ───────────────────────────────────────────
+    // Reads from the flash-resident noise texture sample via XIP.
+    // Parameter selects the playback position; timbre controls pitch.
+    // Random restarts create granular texture.
+    // Samples accessed directly from flash — zero RAM cost.
+    
+    int32_t __not_in_flash_func(ProcessGranular)(uint8_t flags) {
+        (void)flags;
+        
+        // Restart probability: ~1% chance per sample
+        const uint32_t restart_prob = 42949673u;  // ~0.01 * 2^32
+        
+        // Restart position: parameter selects where in the noise sample
+        // parameter is Q15 (0..32767), map to sample position
+        const uint32_t restart_point = (uint32_t)(parameter & 0x7FFF) << 17;
+        
+        // Phase increment: timbre controls speed/pitch
+        // At timbre=0.5 (16384), play at original speed (increment=131072)
+        // timbre maps to -60..+12 semitones of pitch shift
+        // Simplified: increment = 131072 * 2^((timbre*72/32767 - 60) / 12)
+        // Use a rough exponential: timbre² * 524288 / 32767 + 4096
+        int32_t t = timbre;
+        uint32_t phase_increment = 4096 + (uint32_t)((t * t * 16) >> 15);
+        
+        // Base pointer offset from signature (different texture regions)
+        uint32_t sig_offset = (uint32_t)((signature * 8192) >> 15);
+        const int16_t* base = &smp_noise_sample[sig_offset];
+        
+        // Read sample with linear interpolation (directly from flash!)
+        uint32_t phase_int = phase >> 17;
+        int32_t phase_frac = (phase >> 9) & 0xFF;  // 8-bit fraction
+        
+        // Bounds check against noise sample length
+        if (phase_int + 1 < SMP_NOISE_LENGTH - sig_offset) {
+            int32_t a = base[phase_int];
+            int32_t b = base[phase_int + 1];
+            int32_t out = a + (((b - a) * phase_frac) >> 8);
+            
+            phase += phase_increment;
+            
+            // Random restart for granular texture
+            uint32_t coin = FastRandQ15(rng_seed);
+            if (coin < restart_prob) {
+                phase = restart_point;
+            }
+            
+            return out;  // Already Q15 (int16 sample data)
+        } else {
+            // Past end of sample — wrap around
+            phase = restart_point;
+            return 0;
+        }
+    }
+    
+    // ── Sample Player ────────────────────────────────────────────────────
+    // Plays back one of 9 percussion samples from flash.
+    // Parameter selects the sample (crossfades between adjacent ones).
+    // Timbre controls playback speed/pitch.
+    // Gate retriggers from the start.
+    
+    int32_t __not_in_flash_func(ProcessSample)(uint8_t flags) {
+        // Map parameter (Q15) to sample index 0..8 with fractional crossfade
+        // index = (1 - parameter) * 8
+        int32_t index_scaled = ((32767 - parameter) * 8);
+        int32_t idx1 = index_scaled >> 15;
+        int32_t idx_frac = (index_scaled >> 7) & 0xFF;  // 8-bit fraction
+        if (idx1 >= 8) { idx1 = 7; idx_frac = 255; }
+        int32_t idx2 = idx1 + 1;
+        
+        // Segment boundaries from flash
+        uint32_t offset1 = smp_boundaries[idx1];
+        uint32_t offset2 = smp_boundaries[idx2];
+        uint32_t length1 = offset2 - offset1 - 1;
+        uint32_t length2 = smp_boundaries[idx2 + 1] - offset2 - 1;
+        
+        // Phase increment from timbre (pitch control)
+        // At timbre=0.5: normal speed (65536). Range: -36 to +43 semitones
+        uint32_t phase_increment = 8192 + (uint32_t)((timbre * timbre * 4) >> 15);
+        
+        if (flags & ENV_FLAG_RISING) {
+            damp_state = 0;
+            phase = 0;
+        }
+        if (!(flags & ENV_FLAG_GATE)) {
+            // Release damping: damp = 1 - 0.95*(1-damp)
+            damp_state = 32767 - (int32_t)(((int64_t)(32767 - damp_state) * 31129) >> 15);
+        }
+        
+        uint32_t phase_int = phase >> 16;
+        int32_t phase_frac = (phase >> 8) & 0xFF;
+        
+        int32_t sample1 = 0;
+        int32_t sample2 = 0;
+        bool advancing = false;
+        
+        // Read from sample 1 (from flash!)
+        if (phase_int < length1) {
+            const int16_t* base = &smp_sample_data[offset1 + phase_int];
+            int32_t a = base[0];
+            int32_t b = base[1];
+            sample1 = a + (((b - a) * phase_frac) >> 8);
+            advancing = true;
+        }
+        
+        // Read from sample 2 (for crossfade)
+        if (phase_int < length2) {
+            const int16_t* base = &smp_sample_data[offset2 + phase_int];
+            int32_t a = base[0];
+            int32_t b = base[1];
+            sample2 = a + (((b - a) * phase_frac) >> 8);
+            advancing = true;
+        }
+        
+        if (advancing) {
+            phase += phase_increment;
+        }
+        
+        // Crossfade between adjacent samples
+        int32_t out = sample1 + (((sample2 - sample1) * idx_frac) >> 8);
+        
+        // Scale down (samples are full int16 range, we want Q15 headroom)
+        out >>= 1;
+        
+        // Damping output: if parameter is high, damping affects resonator on release
+        if (parameter >= 26214) {  // >= 0.8
+            damping = mul_q15(damp_state, (int32_t)(((int64_t)parameter * 5) >> 15) - 4 * 32767 / 5);
+        }
+        
+        return out;
     }
 };
 
