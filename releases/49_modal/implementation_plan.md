@@ -272,92 +272,47 @@ inline int32_t InterpolateQ15(const int16_t* table, int32_t index_q8) {
 
 ## 6. Phased Development Plan
 
-### Phase 0: Skeleton & Build System ✱ START HERE
-**Files:** `modal.cpp`, `CMakeLists.txt`
+### Phase 0: Skeleton & Build System ✅ DONE
+**Commit:** `662667d` — **Files:** `modal.cpp`, `CMakeLists.txt`
 
-1. Create project directory structure in `releases/49_modal/`
-2. Copy `ComputerCard/` from `51_grains`
-3. Copy `pico_sdk_import.cmake` from `51_grains`
-4. Create `CMakeLists.txt` based on `51_grains` template
-5. Create `modal.cpp` with:
-   - ComputerCard class skeleton
-   - 6-page parameter system with `PageParams` struct (6 pages × 3 knobs)
-   - `KnobLock` mechanism (from grains)
-   - Switch debouncing and page switching
-   - LED feedback system
-   - Dual-core setup with `multicore_fifo` communication
-   - Empty `ProcessSample()` that passes audio through
-   - Empty Core 1 loop that echoes back
-6. Test build and verify basic IO works
+Delivered: IO/UX skeleton with 6-page navigation, knob locking, dual-core FIFO, boot animation. Build: 20.5KB flash, 23.5KB RAM.
 
-**Deliverable:** A program card that boots, shows page LEDs, responds to knobs and switch, passes audio through.
+### Phase 1: Fixed-Point Infrastructure ✅ DONE
+**Commit:** `38bb72d` — **Files:** `dsp_q15.h`, `svf_q15.h`, `envelope_q15.h`, `resources_q15.h/cpp`, `tools/convert_luts.py`
 
-### Phase 1: Fixed-Point Infrastructure
-**Files:** `dsp_q15.h`, `resources_q15.h`, `resources_q15.cpp`
+Delivered:
+- `dsp_q15.h` (13KB): Q15/Q14/Q16 multiply, interpolation, sine/cosine, soft limiter, DC blocker, PRNG, pitch conversion, cosine oscillator
+- `svf_q15.h` (10KB): Zero-delay-feedback SVF (LP/BP/HP/BPN), single-sample and block processing
+- `envelope_q15.h` (8KB): Multistage envelope (AD/AR/ADSR/ADR/looped)
+- `resources_q15.cpp` (82KB source → 19.5KB data): 19 LUT arrays converted from float
+- `tools/convert_luts.py`: Automated float→Q15/Q16 converter
+- Build: 20.5KB flash, 23.5KB RAM (LUTs not yet linked)
 
-1. Create `dsp_q15.h` — all fixed-point math utilities:
-   - Q15/Q16 multiply macros
-   - `InterpolateQ15()`, `InterpolateQ16()`
-   - `SoftLimitQ15()` (rational approximation in integer)
-   - `exp2_q16()` (from grains)
-   - Sine LUT (from grains' `hannLUT` pattern)
-   - `fast_rand()` (from grains)
-   - DC blocker (from grains)
-2. Create `resources_q15.h/cpp`:
-   - Convert essential float LUTs to Q15: `lut_approx_svf_g`, `lut_approx_svf_r`, `lut_approx_svf_h`, `lut_stiffness`, `lut_4_decades`, `lut_accent_gain_coarse`, `lut_accent_gain_fine`, `lut_env_increments`, `lut_env_linear`, `lut_env_expo`, `lut_env_quartic`, `lut_midi_to_f_high`, `lut_midi_to_f_low`
-   - Set up flash pointers for `smp_sample_data` and `smp_noise_sample`
-3. Create `svf_q15.h` — fixed-point SVF filter:
-   - Port `stmlib::Svf` to Q15 with `set_g_r_h()`, `set_g_q()`, `set_f_q()`
-   - Band-pass, low-pass, high-pass modes
-   - Block processing
+### Phase 2: Exciter Port ✅ DONE
+**Commit:** `13a466d` — **Files:** `exciter_q15.h`, `modal.cpp` (DSP loop)
 
-**Deliverable:** All math infrastructure compiles and can be tested with simple sine generation.
+Delivered:
+- `exciter_q15.h` (10KB): 5 excitation models (Mallet, Plectrum, Particles, Flow, Noise)
+- Core 1 DSP loop: full exciter processing per sample with envelope, accent, mix logic
+- Envelope shape parameter maps AD/ADSR/AR (faithfully ported from voice.cc)
+- Strike meta sweeps Mallet→Plectrum→Particles
+- Bow strength, damping feedback, strike bleed all computed
+- GranularSamplePlayer and SamplePlayer omitted (need ~1MB flash samples)
+- Tube waveguide and Diffuser deferred to Phase 3 integration
+- Build: 31KB flash, 34KB RAM (87% RAM free for resonator)
 
-### Phase 2: Exciter Port
-**Files:** `exciter_q15.h`, `exciter_q15.cpp`, `envelope_q15.h`, `tube_q15.h`
-
-1. Port `MultistageEnvelope` to Q15:
-   - All LUT lookups use `InterpolateQ15()`
-   - Phase accumulator stays Q16 for precision
-   - `set_adsr()` uses Q15 levels
-2. Port `Exciter` — start with the simplest models:
-   - **Mallet** (simplest: just a pulse + damping)
-   - **Plectrum** (delayed pulse pair)
-   - **Flow** (random walk noise)
-   - **Noise** (white noise)
-   - **Particles** (stochastic impulses)
-   - Skip: GranularSamplePlayer, SamplePlayer (Phase 2b if RAM allows)
-3. Port `Tube` waveguide to Q15:
-   - Delay line uses `int16_t` buffer
-   - Feedback path in Q15
-4. Port `Diffuser` to Q15 (4 allpass stages):
-   - Already similar to grains' `Diffuser` struct
-5. Wire exciters into Core 1 loop
-6. Test: gate input triggers exciter, audio output should produce clicks/noise
-
-**Deliverable:** Exciter section produces sound on gate trigger.
-
-### Phase 3: Resonator Port
-**Files:** `resonator_q15.h`, `resonator_q15.cpp`, `string_q15.h`, `string_q15.cpp`
+### Phase 3: Resonator Port ✱ NEXT
+**Files:** `resonator_q15.h`
 
 1. Port `Resonator` (modal synthesis) to Q15:
-   - Reduce mode count to **24** (adjustable via `set_resolution()`)
+   - Start with **24 modes** (adjustable)
    - SVF bank uses `SvfQ15` from Phase 1
-   - `ComputeFilters()` runs every N samples (clock divider)
-   - Bowed modes: reduce from 8 to 4
-   - `CosineOscillator` for position → simple Q15 LUT
-   - Bow table → Q15 rational approximation
-2. Port `String` (Karplus-Strong) to Q15:
-   - Delay line: `int16_t[2048]` (saves 50% vs float)
-   - `DampingFilter` → Q15
-   - Dispersion allpass → Q15
-   - Reduce from 5 strings to 3
-3. Port `Voice` — the orchestrator:
-   - Wires exciter → resonator
-   - Handles exciter mixing and level control
-   - Accent gain from LUTs
-4. Wire resonator into Core 1 loop after exciter
-5. Test: full exciter → resonator chain produces pitched modal sounds
+   - `ComputeFilters()` recomputes coefficients every N samples
+   - `CosineOscillator` for position-dependent mixing → `CosineOscQ15`
+   - Bow table (friction characteristic) → Q15 rational approximation
+2. Wire resonator into Core 1 loop after exciter
+3. Test: full exciter → resonator chain produces pitched modal sounds
+4. If time/RAM permits: port String model (Karplus-Strong)
 
 **Deliverable:** Full modal synthesis voice producing musical output.
 
