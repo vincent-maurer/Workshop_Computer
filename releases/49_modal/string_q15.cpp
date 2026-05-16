@@ -52,23 +52,45 @@ void __attribute__((section(".time_critical.string_process"))) StringQ15::Proces
     if (clamped_pos < 0) clamped_pos = 0;
     int32_t comb_delay_q15 = mul_q15(delay_q15, clamped_pos);
     
-    // Delay compensation
-    int32_t read_delay = delay_q15 - 32768; // -1 sample
+    // ── Filter Delay Compensation ──
+    // The 1-pole LP filter adds group delay: d = (1-a)/a.
+    // lp_coef is 'a' in Q15. Result in Q15.
+    int32_t filter_delay_q15 = 0;
+    if (lp_coef > 400) {
+        filter_delay_q15 = (int32_t)((((int64_t)32768 - lp_coef) << 15) / lp_coef);
+    } else {
+        filter_delay_q15 = 80 << 15; // Cap at 80 samples
+    }
+    
+    // Read from string, compensating for filter delay and the implicit 1-sample loop delay.
+    // Implicit loop delay is 32768 (1 sample).
+    int32_t read_delay = delay_q15 - 32768 - filter_delay_q15; 
     
     // Read from string
     int32_t s = string_.ReadHermite(read_delay);
     
-    // Simplistic dispersion (Allpass)
+    // ── Dispersion Delay Compensation ──
+    // The allpass filter adds group delay: d = D * (1-g)/(1+g)
+    // where D is ap_delay and g is ap_gain.
+    int32_t ap_delay_q15 = 0;
+    int32_t ap_gain = 0;
+    int32_t dispersion_compensation_q15 = 0;
+
     if (dispersion_q15_ > 1000) {
-        int32_t ap_gain = -mul_q15(20000, dispersion_q15_); // max -0.61
+        ap_gain = -mul_q15(20000, dispersion_q15_); // max -0.61
         int32_t stretch_point = mul_q15(dispersion_q15_, 16384); // max 0.5
+        ap_delay_q15 = mul_q15(read_delay, stretch_point);
         
-        int32_t ap_delay = mul_q15(read_delay, stretch_point);
-        int32_t main_delay = read_delay - ap_delay;
+        // group delay multiplier: (1-g)/(1+g). 
+        // Since g (ap_gain) is negative, let G = -g. Mult = (1+G)/(1-G).
+        int32_t g_abs = -ap_gain;
+        int32_t multiplier_q12 = (int32_t)((((int64_t)32768 + g_abs) << 12) / (32768 - g_abs));
+        dispersion_compensation_q15 = (int32_t)(((int64_t)ap_delay_q15 * multiplier_q12) >> 12);
         
-        if (ap_delay >= (4 << 15) && main_delay >= (4 << 15)) {
+        int32_t main_delay = read_delay - dispersion_compensation_q15;
+        if (ap_delay_q15 >= (4 << 15) && main_delay >= (4 << 15)) {
             s = string_.ReadHermite(main_delay);
-            s = stretch_.Allpass(s, ap_delay, ap_gain);
+            s = stretch_.Allpass(s, ap_delay_q15, ap_gain);
         }
     }
     

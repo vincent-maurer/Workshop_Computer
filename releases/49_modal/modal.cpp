@@ -118,7 +118,7 @@ struct KnobLock {
 // Page 5: PERFORMANCE    — Pitch Coarse / Fine Tune / Exciter Strength
 
 struct PageParams {
-    int32_t pMain, pX, pY;
+    volatile int32_t pMain, pX, pY;
 };
 
 // ── Resonator Model ─────────────────────────────────────────────────────────
@@ -158,6 +158,7 @@ volatile int32_t    audio_in2_q15  = 0;   // Strike external input (Q15)
 volatile int32_t    currentModel   = MODEL_MODAL;
 
 // ── Core 1 DSP Engine ──────────────────────────────────────────────────────
+// ── Core 1 DSP Engine ──────────────────────────────────────────────────────
 // This function runs on Core 1 in an infinite loop. It waits for trigger
 // words from Core 0, processes one sample of DSP, and sends audio back.
 //
@@ -170,9 +171,9 @@ static ExciterQ15 strike_exciter;
 static EnvelopeQ15 envelope;
 static ResonatorQ15 resonator;
 static StringQ15 strings[3];
-static PlateReverbQ15 reverb;
 static DiffuserQ15 diffuser;
 static TubeQ15 tube;
+static PlateReverbQ15 reverb;  // Moved to Core 0 context logically
 
 static int32_t dc_ex_x = 0;
 static int32_t dc_ex_y = 0;
@@ -189,7 +190,6 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     envelope.Init();
     resonator.Init();
     for (int i=0; i<3; i++) strings[i].Init();
-    reverb.Init();
     diffuser.Init();
     tube.Init();
     
@@ -235,8 +235,6 @@ static void __not_in_flash_func(core1_dsp_loop)() {
 
         // Page 4: Resonator Space
         int32_t position   = params[4].pMain;
-        int32_t space      = params[4].pX;    // Controls stereo spread
-        int32_t reverb_amt = params[4].pY;    // Controls reverb mix and decay
 
         // Page 5: Performance
         int32_t pitch_coarse = params[5].pMain;
@@ -381,18 +379,20 @@ static void __not_in_flash_func(core1_dsp_loop)() {
                 
                 // Read from elements chord table (first string is usually 0, but use table directly)
                 // Let's implement a simple integer chord table locally
+                // Chord table matching Elements' first 3 strings voicing.
+                // Values are semitone offsets in Q8 (1.0 = 256).
                 static const int16_t chord_offsets[11][3] = {
-                    {0, 12, 24}, // Octaves
-                    {0, 7, 12},  // Fifth
-                    {0, 4, 7},   // Major
-                    {0, 3, 7},   // Minor
-                    {0, 4, 11},  // Maj7
-                    {0, 3, 10},  // Min7
-                    {0, 4, 10},  // Dom7
-                    {0, 2, 7},   // Sus2
-                    {0, 5, 7},   // Sus4
-                    {0, 3, 6},   // Dim
-                    {0, 4, 8}    // Aug
+                    {0, -12*256, 12*256 + 3}, // Octaves (with slight detune)
+                    {0, -12*256, 3*256},      // Minor
+                    {0, -12*256, 7*256},      // Minor 7
+                    {0, 3*256, 14*256},       // Minor 9
+                    {0, 3*256, 17*256},       // Minor 11
+                    {0, -12*256, 19*256},     // Power chord stack
+                    {0, 4*256, 17*256},       // Major 11
+                    {0, 4*256, 14*256},       // Major 9
+                    {0, 4*256, 7*256},        // Major
+                    {0, 4*256, 11*256},       // Major 7
+                    {0, 5*256, 7*256}         // Sus4
                 };
                 string_midi += chord_offsets[chord_idx][i] * 256;
             }
@@ -488,16 +488,17 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         int32_t b_mix = b_noise + mul_q15(tube_out, tube_amt >> 3);
 
         // Strike contribution: strike * accent * strike_level_scaled + external
-        // strike_level_scaled = min(strike_level * 1.25, 1.0) * 1.5
+        // strike_level_scaled = min(strike_level * 1.25, 1.0) * 1.1
         int32_t strike_lvl_adj = mul_q15(strike_level, 40960);  // * 1.25
         if (strike_lvl_adj > 32767) strike_lvl_adj = 32767;
-        int32_t strike_scaled = mul_q15(strike_lvl_adj, 49152);  // * 1.5
+        int32_t strike_scaled = mul_q15(strike_lvl_adj, 36044);  // * 1.1
         int32_t strike_mix = mul_q15(mul_q15(strike_out, accent), strike_scaled);
 
         // Strike bleed: raw strike signal bleeds to output at high levels
         int32_t strike_bleed = 0;
         if (strike_level > 26214) {  // > 0.8 in Q15
-            strike_bleed = mul_q15(strike_out, (strike_level - 26214) * 5);
+            // Bleed gain reduced from 5.0 to 3.0 (max 0.6 instead of 1.0)
+            strike_bleed = mul_q15(strike_out, (strike_level - 26214) * 3);
         }
 
         // Sum all components that are always diffused (Blow, External)
@@ -531,86 +532,75 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         if (final_damping < 0) final_damping = 0;
 
         // ── Process Resonator / String ──────────────────────────────────
-        int32_t outL = 0;
-        int32_t outR = 0;
+        // ── Output Stage ───────────────────────────────────────────────
+        // We now send the raw Center and Side signals to Core 0.
+        // Core 0 will handle the Stereo Widener (spread) and Delay (reverb).
+        // This offloads significant CPU from Core 1.
         
+        int32_t final_center = 0;
+        int32_t final_sides = 0;
+
         if (currentModel == MODEL_MODAL) {
-            resonator.damping_q15 = final_damping; // use exciter-damped value
-            // Calculate stereo spread from the Space parameter (matches Elements)
-            // space_adj = max(0, space - 0.1)
-            int32_t space_adj = (space > 3277) ? (space - 3277) : 0;
-            int32_t spread = space_adj;
-            if (spread > 22938) spread = 22938; // Max spread is 0.7
-            
-            int32_t bow_strength_q15 = mul_q15(bow_level, smooth_env_value);
             int32_t res_center = 0;
             int32_t res_sides = 0;
+            int32_t bow_strength_q15 = mul_q15(bow_level, smooth_env_value);
+            
+            resonator.damping_q15 = final_damping;
             resonator.Process1(bow_strength_q15, excitation, res_center, res_sides);
             
-            // Stereo output matches original part.cc:
-            //   L = center + sides * spread
-            //   R = center - sides * spread
-            int32_t side_signal = mul_q15(res_sides, spread);
-            outL = res_center + side_signal;
-            outR = res_center - side_signal;
+            final_center = res_center + strike_bleed;
+            final_sides  = res_sides;
         } else {
             // String models
             int32_t s_center = 0;
             int32_t s_sides = 0;
             int32_t num_strings = (currentModel == MODEL_STRINGS) ? 3 : 1;
-            
-            // Normalize input
             int32_t string_in = (num_strings == 3) ? (excitation >> 2) : excitation;
             
+            // Chord table matching Elements' first 3 strings voicing.
+            // Values in Q8 semitones (1 semitone = 256)
+            static const int16_t chord_offsets[11][3] = {
+                {0, -12*256, 12*256},     // Octaves
+                {0, -12*256, 3*256},      // Minor
+                {0, -12*256, 7*256},      // Minor 7
+                {0, 3*256, 14*256},       // Minor 9
+                {0, 3*256, 17*256},       // Minor 11
+                {0, -12*256, 19*256},     // Power chord stack
+                {0, 4*256, 17*256},       // Major 11
+                {0, 4*256, 14*256},       // Major 9
+                {0, 4*256, 7*256},        // Major
+                {0, 4*256, 11*256},       // Major 7
+                {0, 5*256, 7*256}         // Sus4
+            };
+
             for (int i = 0; i < num_strings; i++) {
+                int32_t string_midi = midi_q8;
+                if (num_strings == 3) {
+                    // Determine chord based on geometry knob (0..32767 -> 0..10 chords)
+                    int32_t chord_idx = (geometry * 11) >> 15;
+                    if (chord_idx > 10) chord_idx = 10;
+                    string_midi += chord_offsets[chord_idx][i];
+                }
+                
+                uint32_t s_inc = MidiToIncrementU32(string_midi);
+                strings[i].SetFrequency(s_inc);
+                strings[i].SetBrightness(brightness);
+                strings[i].SetDamping(final_damping);
+                strings[i].SetPosition(position);
+                strings[i].SetDispersion(geometry);
+
                 int32_t c = 0, s = 0;
                 strings[i].Process(string_in, c, s);
                 s_center += c;
                 s_sides += s;
             }
-            
-            // Calculate stereo spread from Space
-            int32_t space_adj = (space > 3277) ? (space - 3277) : 0;
-            int32_t spread = space_adj;
-            if (spread > 22938) spread = 22938;
-            
-            int32_t side_signal = mul_q15(s_sides, spread);
-            outL = s_center - side_signal;
-            outR = s_center + side_signal;
+            final_center = s_center + strike_bleed;
+            final_sides  = s_sides;
         }
-        
-        // Add strike bleed to both channels
-        outL += strike_bleed;
-        outR += strike_bleed;
-        
-        // Soft-limit before reverb to prevent digital harshness
-        outL = SoftLimitQ15(outL);
-        outR = SoftLimitQ15(outR);
-        
-        // ── Process Reverb ──────────────────────────────────────────────
-        // Reverb Macro (Page 4 Y):
-        // As the knob turns, it increases both the wet mix and the tail length.
-        
-        // Mix: 0 to 100% (allows fully washed-out drone textures)
-        int32_t rev_mix = reverb_amt;
-        
-        // Decay (Tail Length): Ramps from a tight room (0.3) to a massive cavern (0.99)
-        // 0.3 = 9830. 0.99 = 32440. Range = 22610.
-        int32_t rev_decay = 9830 + mul_q15(reverb_amt, 22610);
-        
-        // LP damping: static 0.5 (16384) provides a good balance of shimmer and warmth,
-        // avoiding the muddy buildup of darker plates.
-        int32_t rev_damp = 16384; 
-        
-        reverb.Process(outL, outR, rev_mix, rev_decay, rev_damp);
 
-        // Soft clip
-        outL = SoftClipQ15(outL);
-        outR = SoftClipQ15(outR);
-
-        // ── Send Results Back ───────────────────────────────────────────
-        multicore_fifo_push_blocking((uint32_t)outL);
-        multicore_fifo_push_blocking((uint32_t)outR);
+        // ── Send Results Back (Center/Sides) ────────────────────────────
+        multicore_fifo_push_blocking((uint32_t)final_center);
+        multicore_fifo_push_blocking((uint32_t)final_sides);
     }
 }
 
@@ -675,6 +665,9 @@ public:
 
         // Page 5: Performance (Pitch Coarse, Fine Tune, Strength)
         params[5] = {16384, 16384, 16384};
+
+        // Initialize reverb state
+        reverb.Init();
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -889,11 +882,40 @@ public:
             // By popping before pushing, we don't force Core 1 to finish within this 20.8us ISR.
             // It gets a full 41.6us to compute. If it's not ready, we reuse the old output (preventing a hard drop).
             if (multicore_fifo_rvalid()) {
-                int32_t rawL = (int32_t)multicore_fifo_pop_blocking();
-                int32_t rawR = (int32_t)multicore_fifo_pop_blocking();
-                // DC block the output to prevent drift
-                dspOutL = dc_block(rawL, dc_oxL, dc_oyL);
-                dspOutR = dc_block(rawR, dc_oxR, dc_oyR);
+                int32_t center = (int32_t)multicore_fifo_pop_blocking();
+                int32_t sides  = (int32_t)multicore_fifo_pop_blocking();
+
+                // ── Stereo Widener (Mid-Side Spread) ────────────────────
+                // Space parameter (Page 4 X) controls the stereo width.
+                int32_t space = params[4].pX;
+                int32_t space_adj = (space > 3277) ? (space - 3277) : 0;
+                int32_t spread = space_adj;
+                if (spread > 22938) spread = 22938; // Max spread 0.7
+
+                int32_t side_signal = mul_q15(sides, spread);
+                int32_t outL = center + side_signal;
+                int32_t outR = center - side_signal;
+
+                // ── Soft Limiter ────────────────────────────────────────
+                // Applied before reverb to prevent harsh resonance peaks.
+                outL = SoftLimitQ15(outL);
+                outR = SoftLimitQ15(outR);
+
+                // ── Stereo Delay / Reverb ───────────────────────────────
+                // Space parameter (Page 4 Y) also controls reverb mix/decay.
+                int32_t reverb_amt = params[4].pY;
+                int32_t rev_decay = 9830 + mul_q15(reverb_amt, 22610);
+                int32_t rev_damp = 16384; 
+                
+                reverb.Process(outL, outR, reverb_amt, rev_decay, rev_damp);
+
+                // ── Soft Clip ───────────────────────────────────────────
+                outL = SoftClipQ15(outL);
+                outR = SoftClipQ15(outR);
+
+                // ── DC Block ────────────────────────────────────────────
+                dspOutL = dc_block(outL, dc_oxL, dc_oyL);
+                dspOutR = dc_block(outR, dc_oxR, dc_oyR);
             }
 
             // 2. Send work to Core 1 to start processing the NEXT period
