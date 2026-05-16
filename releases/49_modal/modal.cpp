@@ -25,6 +25,15 @@
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
 #include <string.h>
+#include <cstdlib>
+
+#include "tusb.h"
+#include <pico/unique_id.h>
+#include <stdio.h>
+#include <pico/flash.h>
+#include <hardware/flash.h>
+#include <hardware/sync.h>
+#include "usb_midi_host.h"
 
 // ── Fixed-point DSP infrastructure ──────────────────────────────────────────
 #include "dsp_q15.h"
@@ -104,6 +113,12 @@ struct KnobLock {
         }
         return !locked;
     }
+
+    /// Force the knob back into a locked state (used when CC takes over)
+    void relock(int32_t v) {
+        locked = true;
+        ref = v;
+    }
 };
 
 // ── Page Parameter Storage ──────────────────────────────────────────────────
@@ -119,6 +134,11 @@ struct KnobLock {
 
 struct PageParams {
     volatile int32_t pMain, pX, pY;
+};
+
+// Track what we last sent over MIDI to avoid flooding and loops
+struct MIDIState {
+    int32_t pMain, pX, pY;
 };
 
 // ── Resonator Model ─────────────────────────────────────────────────────────
@@ -151,11 +171,74 @@ enum ResonatorModel {
 // Cross-core access is safe because writes are atomic at the word level
 // and we only write from Core 0 / read from Core 1.
 PageParams params[NUM_PAGES];
+MIDIState last_sent[NUM_PAGES];
 volatile int32_t    cv1_pitch_q8   = 0;   // V/Oct pitch from CV In 1 (Q8)
 volatile int32_t    cv2_strength   = 0;   // Strength from CV In 2 (Q15)
 volatile int32_t    audio_in1_q15  = 0;   // Blow external input (Q15)
 volatile int32_t    audio_in2_q15  = 0;   // Strike external input (Q15)
 volatile int32_t    currentModel   = MODEL_MODAL;
+
+// ── MIDI State ──────────────────────────────────────────────────────────────
+volatile int32_t    midi_pitch_q8  = 0;     // MIDI note pitch (Q8)
+volatile bool       midi_trigger   = false; // MIDI note-on trigger
+volatile bool       midi_gate      = false; // MIDI gate state
+uint8_t             midi_dev_addr  = 0;     // Current MIDI device address
+bool                isUSBMIDIHost  = false; // Are we acting as a host?
+ComputerCard::USBPowerState_t usb_power_state = ComputerCard::Unsupported;
+
+// ── Preset System ───────────────────────────────────────────────────────────
+#define FLASH_PRESET_OFFSET (1536 * 1024) // 1.5MB offset (plenty of room)
+#define PRESET_COUNT 16
+#define PRESET_MAGIC 0x4D4F4441 // "MODA"
+
+struct Preset {
+    uint32_t magic;
+    uint32_t model;
+    uint32_t sequence;        // 16-step bitmask
+    uint8_t  pitches[16];     // 16 pitches
+    int32_t  bpm_val;
+    int32_t  density_val;
+    int32_t  map_val;
+    uint8_t  scale;
+    uint8_t  root;
+    PageParams pages[NUM_PAGES];
+    uint32_t reserved[16];
+};
+
+enum UIState {
+    STATE_NORMAL,
+    STATE_LOAD_MENU,
+    STATE_SAVE_MENU,
+    STATE_GEN_SEQ
+};
+
+volatile UIState currentUIState = STATE_NORMAL;
+
+// ── Generative Sequencer State ──────────────────────────────────────────────
+static int      gen_step = 0;
+static uint32_t gen_sequence = 0xAAAA; // 16-step bitmask
+static uint8_t  gen_pitches[16];
+static int32_t  gen_cv2_val = 0;
+static bool     gen_gate = false;
+static bool     gen_gate_pending = false;
+static bool     gen_pulse_clk = false;
+static int32_t  gen_melody_q8 = 0;
+static int32_t  seq_bpm_val = 16384;
+static int32_t  seq_density_val = 16384;
+static int32_t  seq_map_val = 0;
+static uint8_t  currentScale = 0; // 0=PentMinor, 1=PentMajor, 2=Minor, 3=Major, 4=Chromatic
+static uint8_t  currentRoot = 0;  // 0=C, 1=C#, etc.
+int32_t presetMenuSlot = 0;
+
+// MIDI CC mappings for each page [Page][Knob]
+static const uint8_t PageCCs[6][3] = {
+    {12, 13, 14}, // Page 0: Strike
+    {15, 16, 17}, // Page 1: Blow
+    {18, 19, 20}, // Page 2: Bow
+    {70, 74, 71}, // Page 3: Resonator 1
+    {10, 21, 23}, // Page 4: Resonator 2 (Pos, Space, Reverb)
+    {11, 22, 1}   // Page 5: Perf (Coarse, Fine, Strength)
+};
 
 // ── Core 1 DSP Engine ──────────────────────────────────────────────────────
 // ── Core 1 DSP Engine ──────────────────────────────────────────────────────
@@ -373,16 +456,13 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         for (int i = 0; i < num_strings; i++) {
             int32_t string_midi = midi_q8;
             if (num_strings == 3) {
-                // Determine chord based on geometry knob (0..32767 -> 0..10 chords)
+                // For discrete chord selection, use kMain (raw-ish) to avoid sluggish jumps
+                // but keep geometry (smoothed) for continuous SetDispersion below.
                 int32_t chord_idx = (geometry * 11) >> 15;
                 if (chord_idx > 10) chord_idx = 10;
                 
-                // Read from elements chord table (first string is usually 0, but use table directly)
-                // Let's implement a simple integer chord table locally
-                // Chord table matching Elements' first 3 strings voicing.
-                // Values are semitone offsets in Q8 (1.0 = 256).
                 static const int16_t chord_offsets[11][3] = {
-                    {0, -12*256, 12*256 + 3}, // Octaves (with slight detune)
+                    {0, -12*256, 12*256},     // Octaves
                     {0, -12*256, 3*256},      // Minor
                     {0, -12*256, 7*256},      // Minor 7
                     {0, 3*256, 14*256},       // Minor 9
@@ -394,7 +474,7 @@ static void __not_in_flash_func(core1_dsp_loop)() {
                     {0, 4*256, 11*256},       // Major 7
                     {0, 5*256, 7*256}         // Sus4
                 };
-                string_midi += chord_offsets[chord_idx][i] * 256;
+                string_midi += chord_offsets[chord_idx][i];
             }
             if (string_midi < 0) string_midi = 0;
             if (string_midi > 30720) string_midi = 30720;
@@ -462,9 +542,9 @@ static void __not_in_flash_func(core1_dsp_loop)() {
 
         int32_t e = mul_q15(smooth_env_value, accent);
 
-        // Bow contribution: bow * bow_level * e * 2.5
+        // Bow contribution: bow * bow_level * e * 1.8 (reduced from 2.5)
         int32_t bow_mix = mul_q15(mul_q15(bow_out, bow_level), e);
-        bow_mix = (bow_mix * 5) >> 1;
+        bow_mix = (bow_mix * 9) >> 2; 
 
         // Blow contribution: blow * blow_level_scaled * e + tube body
         // blow_level < 0.5 (16384): scale to 0..1.0 for noise level
@@ -488,17 +568,17 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         int32_t b_mix = b_noise + mul_q15(tube_out, tube_amt >> 3);
 
         // Strike contribution: strike * accent * strike_level_scaled + external
-        // strike_level_scaled = min(strike_level * 1.25, 1.0) * 1.1
+        // strike_level_scaled = min(strike_level * 1.25, 1.0) * 0.9 (reduced from 1.1)
         int32_t strike_lvl_adj = mul_q15(strike_level, 40960);  // * 1.25
         if (strike_lvl_adj > 32767) strike_lvl_adj = 32767;
-        int32_t strike_scaled = mul_q15(strike_lvl_adj, 36044);  // * 1.1
+        int32_t strike_scaled = mul_q15(strike_lvl_adj, 29491);  // * 0.9
         int32_t strike_mix = mul_q15(mul_q15(strike_out, accent), strike_scaled);
 
         // Strike bleed: raw strike signal bleeds to output at high levels
         int32_t strike_bleed = 0;
         if (strike_level > 26214) {  // > 0.8 in Q15
-            // Bleed gain reduced from 5.0 to 3.0 (max 0.6 instead of 1.0)
-            strike_bleed = mul_q15(strike_out, (strike_level - 26214) * 3);
+            // Bleed gain reduced from 3.0 to 1.5
+            strike_bleed = mul_q15(strike_out, ((strike_level - 26214) * 3) >> 1);
         }
 
         // Sum all components that are always diffused (Blow, External)
@@ -518,6 +598,11 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         
         // Sum all parts: Bow (direct) + Diffused (Blow/Ext/SoftStrike) + Direct Strike
         int32_t excitation = bow_mix + diffused_excitation + strike_direct;
+        
+        // ── Exciter Gain Staging ────────────────────────────────────────
+        // Apply soft limiting to the combined excitation signal to prevent 
+        // the resonator from blowing up / clipping internally.
+        excitation = SoftLimitQ15(excitation);
 
         // DC block the excitation signal (critical for strings because strike is a positive impulse)
         excitation = DCBlockQ15(excitation, dc_ex_x, dc_ex_y);
@@ -552,8 +637,6 @@ static void __not_in_flash_func(core1_dsp_loop)() {
             final_sides  = res_sides;
         } else {
             // String models
-            int32_t s_center = 0;
-            int32_t s_sides = 0;
             int32_t num_strings = (currentModel == MODEL_STRINGS) ? 3 : 1;
             int32_t string_in = (num_strings == 3) ? (excitation >> 2) : excitation;
             
@@ -573,6 +656,8 @@ static void __not_in_flash_func(core1_dsp_loop)() {
                 {0, 5*256, 7*256}         // Sus4
             };
 
+            int32_t s_center = 0;
+            int32_t s_sides = 0;
             for (int i = 0; i < num_strings; i++) {
                 int32_t string_midi = midi_q8;
                 if (num_strings == 3) {
@@ -604,7 +689,132 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     }
 }
 
-// ── Main Application ────────────────────────────────────────────────────────
+// ── Main Application Forward Declaration ────────────────────────────────────
+class Modal;
+
+// ── MIDI Callbacks ──────────────────────────────────────────────────────────
+
+// Forward declarations for MIDI callbacks used by the USB host driver
+extern "C" {
+    void tuh_midi_mount_cb(uint8_t dev_addr, uint8_t in_ep, uint8_t out_ep, uint8_t num_cables_rx, uint16_t num_cables_tx);
+    void tuh_midi_umount_cb(uint8_t dev_addr, uint8_t instance);
+    void handle_midi_message(uint8_t *packet, int size);
+    void tuh_midi_rx_cb(uint8_t dev_addr, uint32_t num_packets);
+}
+
+// ── Preset Management Logic ─────────────────────────────────────────────────
+
+void __not_in_flash_func(save_preset)(int slot) {
+    if (slot < 0 || slot >= PRESET_COUNT) return;
+
+    Preset p;
+    p.magic = PRESET_MAGIC;
+    p.model = (uint32_t)currentModel;
+    
+    // Sequencer Save
+    p.sequence = gen_sequence;
+    memcpy(p.pitches, gen_pitches, 16);
+    p.bpm_val = seq_bpm_val;
+    p.density_val = seq_density_val;
+    p.map_val = seq_map_val;
+    p.scale = currentScale;
+    p.root = currentRoot;
+
+    for (int i = 0; i < NUM_PAGES; i++) {
+        p.pages[i] = params[i];
+    }
+
+    // Static buffer to avoid stack overflow (RP2040 stack is small)
+    static uint8_t flash_buffer[4096];
+    
+    uint32_t ints = save_and_disable_interrupts();
+    
+    // Copy existing presets to RAM buffer
+    memcpy(flash_buffer, (const uint8_t*)(XIP_BASE + FLASH_PRESET_OFFSET), 4096);
+    // Update the specific slot in our RAM buffer
+    memcpy(flash_buffer + (slot * sizeof(Preset)), &p, sizeof(Preset));
+
+    // Erase and reprogram the sector
+    flash_range_erase(FLASH_PRESET_OFFSET, 4096);
+    flash_range_program(FLASH_PRESET_OFFSET, flash_buffer, 4096);
+
+    restore_interrupts(ints);
+}
+
+void load_preset(int slot) {
+    if (slot < 0 || slot >= PRESET_COUNT) return;
+
+    const Preset* p = (const Preset*)(XIP_BASE + FLASH_PRESET_OFFSET + (slot * sizeof(Preset)));
+    
+    if (p->magic != PRESET_MAGIC) return;
+
+    currentModel = (int32_t)p->model;
+    
+    // Sequencer Load
+    gen_sequence = p->sequence;
+    memcpy(gen_pitches, p->pitches, 16);
+    seq_bpm_val = p->bpm_val;
+    seq_density_val = p->density_val;
+    seq_map_val = p->map_val;
+    currentScale = p->scale;
+    currentRoot = p->root;
+
+    for (int i = 0; i < NUM_PAGES; i++) {
+        params[i] = p->pages[i];
+    }
+}
+
+// ── Factory Defaults ────────────────────────────────────────────────────────
+
+static const Preset factory_presets[8] = {
+    {   // Slot 0: Wooden Marimba
+        PRESET_MAGIC, (uint32_t)MODEL_MODAL, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
+        {{32767, 16384, 0}, {0, 0, 0}, {0, 0, 16384}, {16384, 28000, 8000}, {16384, 5000, 2000}, {16384, 16384, 32767}}, {0}
+    },
+    {   // Slot 1: Bowed Glass
+        PRESET_MAGIC, (uint32_t)MODEL_MODAL, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
+        {{0, 0, 0}, {0, 0, 0}, {28000, 16384, 32000}, {30000, 20000, 30000}, {4000, 32767, 30000}, {12000, 16384, 32767}}, {0}
+    },
+    {   // Slot 2: Industrial Plate
+        PRESET_MAGIC, (uint32_t)MODEL_MODAL, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
+        {{32767, 32767, 32767}, {8000, 16384, 16384}, {0, 0, 0}, {32000, 10000, 15000}, {28000, 16384, 10000}, {8000, 16384, 32767}}, {0}
+    },
+    {   // Slot 3: Ambient Strings
+        PRESET_MAGIC, (uint32_t)MODEL_STRINGS, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
+        {{16384, 16384, 0}, {0, 0, 0}, {25000, 8000, 28000}, {20000, 16384, 25000}, {10000, 30000, 28000}, {16384, 16384, 32767}}, {0}
+    },
+    {   // Slot 4: Wind Flute
+        PRESET_MAGIC, (uint32_t)MODEL_MODAL, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
+        {{0, 0, 0}, {32767, 12000, 16384}, {0, 0, 16384}, {12000, 18000, 22000}, {16384, 12000, 15000}, {24000, 16384, 32767}}, {0}
+    },
+    {   // Slot 5: Plucked Bass
+        PRESET_MAGIC, (uint32_t)MODEL_STRING, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
+        {{32767, 8000, 0}, {0, 0, 0}, {0, 0, 0}, {8000, 8000, 12000}, {16384, 0, 0}, {4000, 16384, 32767}}, {0}
+    },
+    {   // Slot 6: Searing Bow
+        PRESET_MAGIC, (uint32_t)MODEL_STRINGS, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
+        {{0, 0, 0}, {0, 0, 0}, {32767, 30000, 20000}, {16384, 32767, 30000}, {16384, 16384, 20000}, {20000, 16384, 32767}}, {0}
+    },
+    {   // Slot 7: Space Particles
+        PRESET_MAGIC, (uint32_t)MODEL_MODAL, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
+        {{28000, 16384, 32767}, {10000, 32767, 32767}, {0, 0, 16384}, {25000, 32767, 28000}, {16384, 32767, 32767}, {16384, 16384, 32767}}, {0}
+    }
+};
+
+void init_factory_presets() {
+    const Preset* p = (const Preset*)(XIP_BASE + FLASH_PRESET_OFFSET);
+    if (p->magic != PRESET_MAGIC) {
+        // Flash is empty, write factory defaults
+        uint8_t buffer[4096];
+        memset(buffer, 0, 4096);
+        memcpy(buffer, factory_presets, sizeof(factory_presets));
+        
+        uint32_t ints = save_and_disable_interrupts();
+        flash_range_erase(FLASH_PRESET_OFFSET, 4096);
+        flash_range_program(FLASH_PRESET_OFFSET, buffer, 4096);
+        restore_interrupts(ints);
+    }
+}
 
 class Modal : public ComputerCard {
 public:
@@ -616,6 +826,8 @@ public:
     // ── Switch State ────────────────────────────────────────────────────
     uint32_t switchDownTimer = 0;   // How long switch has been held down
     bool switchHandled = false;     // Has the current press been handled?
+    uint32_t switchUpTimer = 0;
+    bool switchHandledUp = false;
     bool switchInit = false;        // Has switch been initialized?
     bool lastSwitchUp = false;      // Previous state of switch-up
     Switch lastSwitch = Switch::Middle;  // Debounced switch state
@@ -668,6 +880,37 @@ public:
 
         // Initialize reverb state
         reverb.Init();
+
+        // Initialize sequencer pitches (Pentatonic Minor)
+        for (int i = 0; i < 16; i++) {
+            static const uint8_t scale[] = {0, 3, 5, 7, 10};
+            gen_pitches[i] = 48 + scale[i % 5];
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  InitUSB — Initialize TinyUSB based on hardware power state
+    // ────────────────────────────────────────────────────────────────────
+
+    void InitUSB() {
+        // Wait for USB power state to settle
+        sleep_ms(300); 
+        usb_power_state = USBPowerState();
+        
+        // Visual feedback:
+        // LED 0 flashes for Host mode, LED 1 for Device mode
+        if (usb_power_state == ComputerCard::DFP) {
+            isUSBMIDIHost = true;
+            LedOn(0); 
+            tuh_init(TUH_OPT_RHPORT);
+        } else {
+            isUSBMIDIHost = false;
+            LedOn(1);
+            tud_init(TUD_OPT_RHPORT);
+        }
+        sleep_ms(200);
+        LedOff(0);
+        LedOff(1);
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -677,41 +920,281 @@ public:
     // ────────────────────────────────────────────────────────────────────
 
     void BackgroundLoop() override {
+        // ── USB / MIDI Tasks ────────────────────────────────────────────
+        if (isUSBMIDIHost) {
+            tuh_task();
+        } else {
+            tud_task();
+            while (tud_midi_available()) {
+                uint8_t packet[4];
+                tud_midi_packet_read(packet);
+                handle_midi_message(packet + 1, 3);
+            }
+
+            // ── MIDI Feedback Sync ──────────────────────────────────────
+            // Send current knob values back to UI, but debounced and only if changed.
+            // Check one page per loop to save CPU.
+            static int syncPage = 0;
+            static int32_t last_sent_model = -1;
+            syncPage = (syncPage + 1) % 6;
+            
+            // Sync Model via CC 102
+            if (currentModel != last_sent_model) {
+                last_sent_model = currentModel;
+                if (tud_midi_mounted()) {
+                    uint8_t packet[4] = { 0x0B, 0xB0, 102, (uint8_t)currentModel };
+                    tud_midi_packet_write(packet);
+                }
+            }
+            
+            auto syncKnob = [&](int32_t current, int32_t& last, uint8_t cc) {
+                // Only send if the difference is significant (>1 CC step) to avoid jitter
+                int32_t diff = (current > last) ? (current - last) : (last - current);
+                if (diff > 256) {
+                    last = current;
+                    if (tud_midi_mounted()) {
+                        uint8_t packet[4] = { 0x0B, 0xB0, cc, (uint8_t)(current >> 8) };
+                        tud_midi_packet_write(packet);
+                    }
+                }
+            };
+
+            syncKnob(params[syncPage].pMain, last_sent[syncPage].pMain, PageCCs[syncPage][0]);
+            syncKnob(params[syncPage].pX,    last_sent[syncPage].pX,    PageCCs[syncPage][1]);
+            syncKnob(params[syncPage].pY,    last_sent[syncPage].pY,    PageCCs[syncPage][2]);
+
+            // Sync Sequencer Params
+            static int32_t last_seq_dens = -1, last_seq_bpm = -1, last_seq_ent = -1;
+            auto syncSeq = [&](int32_t &current, int32_t &last, uint8_t cc) {
+                // Apply a 2.5% dead-zone (800 units in Q15)
+                if (abs(current - last) > 800) {
+                    last = current;
+                    if (tud_midi_mounted()) {
+                        uint8_t packet[4] = { 0x0B, 0xB0, cc, (uint8_t)(current >> 8) };
+                        tud_midi_packet_write(packet);
+                    }
+                }
+            };
+            syncSeq(seq_density_val, last_seq_dens, 103);
+            syncSeq(seq_bpm_val,     last_seq_bpm,  104);
+            syncSeq(seq_map_val,     last_seq_ent,  105);
+
+            // Sync Sequence Pattern
+            static uint32_t last_gen_sequence = 0;
+            if (gen_sequence != last_gen_sequence) {
+                last_gen_sequence = gen_sequence;
+                if (tud_midi_mounted()) {
+                    uint8_t p1[4] = { 0x0B, 0xB0, 107, (uint8_t)(gen_sequence & 0x7F) };
+                    uint8_t p2[4] = { 0x0B, 0xB0, 108, (uint8_t)((gen_sequence >> 7) & 0x7F) };
+                    uint8_t p3[4] = { 0x0B, 0xB0, 110, (uint8_t)((gen_sequence >> 14) & 0x03) };
+                    tud_midi_packet_write(p1);
+                    tud_midi_packet_write(p2);
+                    tud_midi_packet_write(p3);
+                }
+            }
+
+            // ── Generative Sequencer Logic ──────────────────────────────────
+            // Runs every background loop (~1ms) at all times
+            static uint32_t last_gen_ms = 0;
+            uint32_t now = to_ms_since_boot(get_absolute_time());
+            
+            int bpm = 40 + ((seq_bpm_val * 200) >> 15);
+            uint32_t step_ms = (60000 / bpm) / 4; // 16th notes
+
+            if (now - last_gen_ms >= step_ms) {
+                last_gen_ms = now;
+                gen_step = (gen_step + 1) % 16;
+                gen_pulse_clk = true; // Clock pulse start
+
+                // Sync step to Web UI
+                if (tud_midi_mounted()) {
+                    uint8_t packet[4] = { 0x0B, 0xB0, 106, (uint8_t)gen_step };
+                    tud_midi_packet_write(packet);
+                }
+
+                // ── Topographic Melodic Engine (Grids Style) ─────────────────
+                // 4 Basis Patterns (Corner 0,0: Steady, 1,0: Syncopated, 0,1: Arp, 1,1: Chaos)
+                static const uint16_t basis_gates[4] = {
+                    0x8888, // 1/4 Downbeats
+                    0x9249, // Euclidean 3/8 (Syncopated)
+                    0xAAAA, // 1/8 Steady
+                    0xBEAF  // Broken 16ths
+                };
+                static const int8_t basis_pitches[4][16] = {
+                    {0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0},       // Steady Root
+                    {0,3,7,0, 3,7,12,7, 0,3,7,0, 5,7,10,7},    // Rhythmic Arp
+                    {0,12,7,12, 5,17,12,17, 7,19,15,19, 0,12,7,12}, // High Arp
+                    {0,7,3,10, 5,12,7,15, 2,9,5,12, 7,14,10,17}  // Jumpy Chaos
+                };
+
+                // Rhythmic Hierarchy Seeds (Downbeats -> Eighths -> Sixteenths)
+                static const uint16_t rh_seeds[16] = {
+                    0, 16000, 8000, 24000, 4000, 20000, 12000, 28000,
+                    2000, 18000, 10000, 26000, 6000, 22000, 14000, 30000
+                };
+
+                // 2D Interpolation (X=Density, Y=Map)
+                int32_t y = seq_map_val; // 0..32767
+                int32_t x = seq_density_val; // 0..32767
+
+                // Chaos Injection (Full Right on Map)
+                bool chaos_mode = (y > 31000);
+                if (chaos_mode) {
+                    y = 31000; // Cap interpolation at the edge of chaos
+                }
+
+                // Blend Gates (Bitwise selection based on Y)
+                uint16_t gA = (y < 16384) ? basis_gates[0] : basis_gates[2];
+                uint16_t gB = (y < 16384) ? basis_gates[1] : basis_gates[3];
+                uint16_t blendY = (y < 16384) ? (y << 1) : ((y - 16384) << 1);
+                
+                // Select patterns based on Y blend
+                uint16_t master_gates = (uint16_t)((((uint32_t)gA * (32768 - blendY)) + ((uint32_t)gB * blendY)) >> 15);
+                
+                // Euclidean-style density thresholding
+                bool gate_on = (master_gates & (1 << gen_step)) || (rh_seeds[gen_step] < (uint32_t)x);
+                
+                // Chaos variation
+                if (chaos_mode && ((rand() % 100) < 20)) {
+                    gate_on = !gate_on; // Toggle gate randomly
+                }
+
+                gen_sequence = (gen_sequence & ~(1 << gen_step)) | (gate_on ? (1 << gen_step) : 0);
+
+                // Interpolate Pitches
+                int idxA = (y < 16384) ? 0 : 2;
+                int idxB = (y < 16384) ? 1 : 3;
+                int32_t pA = basis_pitches[idxA][gen_step];
+                int32_t pB = basis_pitches[idxB][gen_step];
+                int32_t p_blend = (pA * (32768 - blendY) + pB * blendY) >> 15;
+
+                if (chaos_mode) {
+                    p_blend += (rand() % 7) - 3; // Slighly shift pitch
+                }
+
+                // Map to Scale/Root
+                static const uint8_t scales[5][12] = {
+                    {0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24, 27}, // Pent Minor
+                    {0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24, 26},  // Pent Major
+                    {0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19},   // Natural Minor
+                    {0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19},   // Major
+                    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}        // Chromatic
+                };
+                uint8_t scale_idx = currentScale % 5;
+                // Quantize interpolated pitch to scale
+                int32_t target_note = p_blend + 60; // Base C4
+                int32_t octave = (target_note / 12) - 4;
+                int32_t note_in_octave = target_note % 12;
+                
+                // Find closest note in scale
+                int32_t best_dist = 100;
+                int32_t best_note = 0;
+                for(int i=0; i<12; i++) {
+                    int32_t dist = abs(note_in_octave - scales[scale_idx][i]);
+                    if (dist < best_dist) {
+                        best_dist = dist;
+                        best_note = scales[scale_idx][i];
+                    }
+                }
+                gen_pitches[gen_step] = 48 + currentRoot + (octave * 12) + best_note;
+
+                // Trigger Step
+                bool stepActive = (gen_sequence & (1 << gen_step));
+                if (stepActive) {
+                    gen_melody_q8 = (gen_pitches[gen_step] - 60) * 256;
+                    gen_gate_pending = true; // Prepare to fire gate after CV settles
+                    gen_gate = false;        // Ensure gate is low during CV transition
+                } else {
+                    gen_gate = false;
+                    gen_gate_pending = false;
+                }
+            } else if (gen_gate_pending && (now - last_gen_ms >= 2)) {
+                // 2ms have passed since CV update — fire the gate
+                gen_gate = true;
+                gen_gate_pending = false;
+            } else if (gen_gate && (now - last_gen_ms >= (step_ms / 2))) {
+                // 50% duty cycle reached — end the gate
+                gen_gate = false;
+            } else if (now - last_gen_ms > 20) {
+                gen_pulse_clk = false; // Short clock pulse
+            }
+
+            // ── External Sync & Randomization ─────────────────────────────
+            static bool last_pulse1 = false, last_pulse2 = false;
+            bool p1 = PulseIn1();
+            bool p2 = PulseIn2();
+            
+            if (p1 && !last_pulse1) {
+                // Pulse 1 In: Randomize CV 2
+                gen_cv2_val = (rand() % 4096) - 2048;
+            }
+            if (p2 && !last_pulse2) {
+                // Pulse 2 In: Sync Sequencer (Reset to Step 0)
+                gen_step = 0;
+            }
+            last_pulse1 = p1;
+            last_pulse2 = p2;
+        }
+
         static uint32_t loopCount = 0;
-        if (++loopCount < 5000) return;
+        if (++loopCount < 1000) return;
         loopCount = 0;
 
-        // ── LED Display ─────────────────────────────────────────────────
-        // Show current page indicator. During the first 500ms after a page
-        // change, the page LED is bright. After that, it dims to a subtle
-        // indicator and other LEDs show activity meters.
-
-        if (pageDisplayTimer > 0) {
-            // Page just changed — show page number prominently
+        // ── LED Rendering ───────────────────────────────────────────────
+        if (currentUIState == STATE_LOAD_MENU || currentUIState == STATE_SAVE_MENU) {
+            // Preset Menu Visuals:
+            // LEDs 0-3 show slot index in binary (0-15)
+            // LED 4 pulses for LOAD, LED 5 pulses for SAVE
+            static uint32_t pulseTimer = 0;
+            pulseTimer++;
+            
             for (int i = 0; i < 6; i++) {
-                LedOn(i, i == currentPage);
-            }
-        } else {
-        // ── Normal Operation LED Display ───────────────────────────────
-        if (pageDisplayTimer == 0) {
-            // Display only the current page (LED 0-5)
-            for (int i = 0; i < 6; i++) {
-                int32_t b = (i == currentPage) ? 1800 : 0;
-                
-                // Pulse Display (Gate activity) on LED 4
-                // Adds on top of the page indicator if we are on Page 4
-                if (i == 4 && previousGate) {
-                    b += 1500; // Slightly stronger pulse
-                }
-                
-                if (b > 4095) b = 4095;
-                if (b > 0) {
+                if (i < 4) {
+                    // Binary slot display
+                    bool on = (presetMenuSlot & (1 << i));
+                    LedOn(i, on);
+                } else if (i == 4 && currentUIState == STATE_LOAD_MENU) {
+                    // Pulse LED 4 for Load
+                    int32_t b = (pulseTimer % 50 < 25) ? 4095 : 500;
+                    LedBrightness(i, b);
+                } else if (i == 5 && currentUIState == STATE_SAVE_MENU) {
+                    // Pulse LED 5 for Save
+                    int32_t b = (pulseTimer % 50 < 25) ? 4095 : 500;
                     LedBrightness(i, b);
                 } else {
                     LedOff(i);
                 }
             }
-        }
+        } else if (currentUIState == STATE_GEN_SEQ) {
+            // Sequencer View: 6 LEDs representing the 16 steps
+            // 1. Background bar shows Density
+            int density_leds = (seq_density_val * 6) >> 15;
+            // 2. Traveling dot shows 16-step position scaled to 6 LEDs
+            int pos_led = (gen_step * 6) / 16;
+
+            for(int i=0; i<6; i++) {
+                int br = 0;
+                if (i < density_leds) br = 150; // Dim background for density
+                if (i == pos_led) br = 4095;     // Bright dot for position
+                LedBrightness(i, br);
+            }
+        } else if (pageDisplayTimer > 0) {
+            // Page just changed — show current page prominently
+            for (int i = 0; i < 6; i++) {
+                LedOn(i, i == currentPage);
+            }
+        } else {
+            // Normal Operation: Display current page + Gate pulses
+            for (int i = 0; i < 6; i++) {
+                int32_t b = (i == currentPage) ? 1800 : 0;
+                
+                // Pulse LED 4 on gate activity
+                if (i == 4 && previousGate) b += 2000;
+                
+                if (b > 4095) b = 4095;
+                if (b > 0) LedBrightness(i, b);
+                else LedOff(i);
+            }
         }
     }
 
@@ -741,8 +1224,9 @@ public:
 
         // ── Poll Triggers ───────────────────────────────────────────────
         // Check pulse inputs at full 48kHz rate to avoid missing triggers.
-        if (PulseIn1RisingEdge()) {
+        if (PulseIn1RisingEdge() || midi_trigger) {
             triggerBuffered = true;
+            midi_trigger = false;
         }
 
         // ── Read Raw Inputs ─────────────────────────────────────────────
@@ -756,23 +1240,28 @@ public:
         int32_t kX    = knob_to_q15(rawX);
         int32_t kY    = knob_to_q15(rawY);
 
-        // Smooth knobs with simple IIR (>>2 = 0.25 coefficient)
-        smoothMain += (kMain - smoothMain) >> 2;
-        smoothX    += (kX    - smoothX)    >> 2;
-        smoothY    += (kY    - smoothY)    >> 2;
+        // Smooth knobs with heavy IIR for sequencer (>>5) and 
+        // responsive IIR for normal play (>>3)
+        int32_t shift = (currentUIState == STATE_GEN_SEQ) ? 5 : 3;
+        smoothMain += (kMain - smoothMain) >> shift;
+        smoothX    += (kX    - smoothX)    >> shift;
+        smoothY    += (kY    - smoothY)    >> shift;
 
-        // Smooth CV1 for V/Oct pitch tracking
-        // CV is ±2048 (12-bit signed). Check if connected to avoid noise drift.
+        // CV1 for V/Oct pitch tracking
         int32_t cv1_raw = Connected(ComputerCard::CV1) ? CVIn1() : 0;
-        
-        // Heavy IIR smoothing for stable pitch. Steady state cv1_acc ≈ cv1_raw * 256.
         cv1_acc = cv1_acc - (cv1_acc >> 8) + cv1_raw;
         int32_t cv1_smoothed = cv1_acc >> 8;
         
-        // 1 Volt ≈ 410 raw. 1 Octave = 3072 in Q8.
-        // Scale = 3072 / 410 = 7.49.
-        // Multiply by 7.5: cv1_pitch_q8 = (cv1_smoothed * 15) / 2
-        cv1_pitch_q8 = (cv1_smoothed * 15) >> 1;
+        // Sample & Hold logic triggered by Pulse In 1
+        static bool last_p1_sh = false;
+        bool p1_now = PulseIn1();
+        if (p1_now && !last_p1_sh) {
+            // Sample: 1 Volt ≈ 410 raw. 1 Octave = 3072 in Q8.
+            int32_t raw_pitch = ((cv1_smoothed * 15) >> 1);
+            // Quantize to nearest semitone (256 in Q8)
+            cv1_pitch_q8 = ((raw_pitch + 128) & ~0xFF) + midi_pitch_q8;
+        }
+        last_p1_sh = p1_now;
 
         // CV2 for strength/accent modulation
         int32_t cv2_raw = Connected(ComputerCard::CV2) ? CVIn2() : 0;
@@ -797,25 +1286,30 @@ public:
             debounceTimer = 0;
         }
 
-        // ── Switch Down: Page Cycling ───────────────────────────────────
-        // Tap (<312ms) = next page. Hold (>312ms) = previous page.
+        // ── Switch Down: Page Cycling & Preset Menu ───────────────────────
+        // Tap = next page. Hold (2s) = Preset Menu (X Left = Load, X Right = Save).
         if (effectiveSwitch == Switch::Down) {
             switchDownTimer++;
+            if (switchDownTimer > 30000 && currentUIState == STATE_NORMAL) {
+                if (smoothX < 16384) currentUIState = STATE_LOAD_MENU;
+                else currentUIState = STATE_SAVE_MENU;
+                lockMain.relock(smoothMain);
+                lockX.relock(smoothX);
+                lockY.relock(smoothY);
+            }
         } else {
-            if (switchDownTimer > 500) {  // Minimum 10ms to count as press
-                if (!switchHandled) {
-                    if (switchDownTimer < 15000) {
-                        // Short tap: advance to next page
-                        currentPage = (currentPage + 1) % NUM_PAGES;
-                    } else {
-                        // Long press: go to previous page
-                        currentPage = (currentPage + NUM_PAGES - 1) % NUM_PAGES;
-                    }
-                    // Lock all knobs to prevent parameter jumps
-                    lockMain.engage(smoothMain);
-                    lockX.engage(smoothX);
-                    lockY.engage(smoothY);
-                    // Start page display timer for visual feedback
+            if (switchDownTimer > 500) {
+                if (currentUIState == STATE_LOAD_MENU) {
+                    load_preset(presetMenuSlot);
+                    currentUIState = STATE_NORMAL;
+                } else if (currentUIState == STATE_SAVE_MENU) {
+                    save_preset(presetMenuSlot);
+                    currentUIState = STATE_NORMAL;
+                } else if (!switchHandled) {
+                    currentPage = (currentPage + 1) % NUM_PAGES;
+                    lockMain.relock(smoothMain);
+                    lockX.relock(smoothX);
+                    lockY.relock(smoothY);
                     pageDisplayTimer = PAGE_DISPLAY_DURATION;
                 }
                 switchHandled = true;
@@ -826,37 +1320,56 @@ public:
             }
         }
 
-        // ── Switch Up: Model Toggle ─────────────────────────────────────
-        // Toggle up cycles through resonator models: Modal → String → Strings
-        bool swUp = (effectiveSwitch == Switch::Up);
-        if (!switchInit) {
-            lastSwitchUp = swUp;
-            switchInit = true;
-        } else if (swUp && !lastSwitchUp) {
-            currentModel = (currentModel + 1) % MODEL_COUNT;
+        // ── Switch Up: Model Toggle & Generative Menu ───────────────────
+        // Tap = cycle models. Hold (2s) = Generative Sequencer Menu.
+        if (effectiveSwitch == Switch::Up) {
+            switchUpTimer++;
+            if (switchUpTimer > 30000 && currentUIState == STATE_NORMAL) {
+                currentUIState = STATE_GEN_SEQ;
+                lockMain.relock(smoothMain);
+                lockX.relock(smoothX);
+                lockY.relock(smoothY);
+            }
+        } else {
+            if (switchUpTimer > 500) {
+                if (currentUIState == STATE_GEN_SEQ) {
+                    currentUIState = STATE_NORMAL;
+                    lockMain.relock(smoothMain);
+                    lockX.relock(smoothX);
+                    lockY.relock(smoothY);
+                } else if (!switchHandledUp) {
+                    currentModel = (currentModel + 1) % MODEL_COUNT;
+                }
+                switchHandledUp = true;
+            }
+            if (effectiveSwitch == Switch::Middle) {
+                switchUpTimer = 0;
+                switchHandledUp = false;
+            }
         }
-        lastSwitchUp = swUp;
 
-        // Also allow Pulse In 2 to toggle model
-        if (PulseIn2RisingEdge()) {
-            currentModel = (currentModel + 1) % MODEL_COUNT;
+        // ── Generative Sequencer / Preset Menu Controls ──────────────────
+        if (currentUIState == STATE_GEN_SEQ) {
+            if (lockMain.update(smoothMain)) seq_density_val = smoothMain;
+            if (lockX.update(smoothX))    seq_bpm_val     = smoothX;
+            if (lockY.update(smoothY))    seq_map_val     = smoothY;
+        } else if (currentUIState == STATE_LOAD_MENU || currentUIState == STATE_SAVE_MENU) {
+            // Use Main knob to select slot 0-15
+            presetMenuSlot = (smoothMain >> 11); // Q15 -> 0..15
+            if (presetMenuSlot > 15) presetMenuSlot = 15;
+            if (presetMenuSlot < 0)  presetMenuSlot = 0;
         }
+
+        // Pulse In 2 functionality moved to Sequencer Sync
 
         // ── Page Display Timer ──────────────────────────────────────────
         if (pageDisplayTimer > 0) pageDisplayTimer--;
 
-        // ── Parameter Updates with Knob Locking ─────────────────────────
-        // Only update the current page's parameters if the knob has been
-        // moved past the lock threshold. This prevents parameter jumps
-        // when switching between pages.
-        if (lockMain.update(smoothMain)) {
-            params[currentPage].pMain = smoothMain;
-        }
-        if (lockX.update(smoothX)) {
-            params[currentPage].pX = smoothX;
-        }
-        if (lockY.update(smoothY)) {
-            params[currentPage].pY = smoothY;
+        // Only update parameters if we are in normal operation mode
+        if (currentUIState == STATE_NORMAL) {
+            if (lockMain.update(smoothMain)) params[currentPage].pMain = smoothMain;
+            if (lockX.update(smoothX))    params[currentPage].pX    = smoothX;
+            if (lockY.update(smoothY))    params[currentPage].pY    = smoothY;
         }
 
         // ── DSP Engine Communication (24kHz) ────────────────────────────
@@ -869,7 +1382,7 @@ public:
 
             // Build gate flags
             uint32_t flags = FIFO_FLAG_ACTIVE;
-            bool gateNow = PulseIn1() || triggerBuffered;
+            bool gateNow = PulseIn1() || triggerBuffered || midi_gate;
 
             if (gateNow)               flags |= FIFO_FLAG_GATE;
             if (gateNow && !previousGate)  flags |= FIFO_FLAG_RISING;
@@ -936,33 +1449,162 @@ public:
         AudioOut1((int16_t)outL);
         AudioOut2((int16_t)outR);
 
-        // ── CV Outputs (meters) ─────────────────────────────────────────
-        // TODO Phase 5: Output exciter/resonator levels as CV
-        CVOut1(0);
-        CVOut2(0);
+        // ── CV Outputs ──────────────────────────────────────────────────
+        // Always output the current melody/mod, but they only update 
+        // in the background loop (with a 2ms lead time before gen_gate).
+        int32_t melody_dac = (gen_melody_q8 * 410) / 3072;
+        CVOut1(melody_dac);
+        CVOut2(gen_cv2_val);
 
         // ── Pulse Outputs ───────────────────────────────────────────────
-        // Pulse Out 1: Gate passthrough
-        PulseOut1(previousGate);
-        // Pulse Out 2: Reserved for envelope EOC (Phase 5)
-        PulseOut2(false);
+        PulseOut1(gen_gate);
+        PulseOut2(gen_pulse_clk);
     }
 };
 
-// ── Entry Point ─────────────────────────────────────────────────────────────
-
 int main() {
-    // Overclock to 240MHz for maximum DSP headroom
-    // (matching 51_grains pattern)
+    // ── System Overclock ────────────────────────────────────────────────
+    // 240MHz for maximum DSP headroom
     vreg_set_voltage(VREG_VOLTAGE_1_25);
     sleep_ms(10);
     set_sys_clock_khz(240000, true);
 
-    // Launch Core 1 DSP engine before starting the audio interrupt
+    // Create the application
+    Modal *modal = new Modal();
+    modal->EnableNormalisationProbe();
+
+    // ── USB / MIDI Initialization ───────────────────────────────────────
+    modal->InitUSB();
+
+    // Initialize factory presets if flash is empty
+    init_factory_presets();
+
+    // Launch Core 1 DSP engine
     multicore_launch_core1(core1_dsp_loop);
 
-    // Create and run the main application
-    Modal modal;
-    modal.EnableNormalisationProbe();
-    modal.Run();  // Never returns — ProcessSample runs in ISR at 48kHz
+    // Run the main application (never returns)
+    modal->Run(); 
+}
+
+// ── MIDI Callback Implementations ───────────────────────────────────────────
+
+extern "C" {
+    void tuh_midi_mount_cb(uint8_t dev_addr, uint8_t in_ep, uint8_t out_ep, uint8_t num_cables_rx, uint16_t num_cables_tx) {
+        (void)in_ep; (void)out_ep; (void)num_cables_rx; (void)num_cables_tx;
+        if (midi_dev_addr == 0) midi_dev_addr = dev_addr;
+    }
+
+    void tuh_midi_umount_cb(uint8_t dev_addr, uint8_t instance) {
+        (void)instance;
+        if (dev_addr == midi_dev_addr) midi_dev_addr = 0;
+    }
+
+    void handle_midi_message(uint8_t *packet, int size) {
+        if (size < 3) return;
+        uint8_t status = packet[0];
+        uint8_t type = status & 0xF0;
+        
+        Modal* app = (Modal*)Modal::ThisPtr();
+
+        if (type == 0x90 && packet[2] > 0) { // Note On
+            midi_pitch_q8 = (packet[1] - 60) * 256;
+            midi_gate = true;
+            midi_trigger = true;
+        } else if (type == 0x80 || (type == 0x90 && packet[2] == 0)) { // Note Off
+            if (midi_pitch_q8 == (packet[1] - 60) * 256) {
+                midi_gate = false;
+            }
+        } else if (type == 0xB0) { // CC
+            uint8_t cc = packet[1];
+            int32_t val = packet[2] << 8; 
+
+            int targetPage = -1;
+            int targetKnob = -1;
+
+            switch(cc) {
+                case 12: targetPage = 0; targetKnob = 0; break;
+                case 13: targetPage = 0; targetKnob = 1; break;
+                case 14: targetPage = 0; targetKnob = 2; break;
+                case 15: targetPage = 1; targetKnob = 0; break;
+                case 16: targetPage = 1; targetKnob = 1; break;
+                case 17: targetPage = 1; targetKnob = 2; break;
+                case 18: targetPage = 2; targetKnob = 0; break;
+                case 19: targetPage = 2; targetKnob = 1; break;
+                case 20: targetPage = 2; targetKnob = 2; break;
+                case 70: targetPage = 3; targetKnob = 0; break;
+                case 74: targetPage = 3; targetKnob = 1; break;
+                case 71: targetPage = 3; targetKnob = 2; break;
+                case 10: targetPage = 4; targetKnob = 0; break;
+                case 21: targetPage = 4; targetKnob = 1; break;
+                case 23: targetPage = 4; targetKnob = 2; break; // Reverb (Page 4 Y)
+                case 1:  targetPage = 5; targetKnob = 2; break; // Strength (Page 5 Y)
+                case 11: targetPage = 5; targetKnob = 0; break;
+                case 22: targetPage = 5; targetKnob = 1; break;
+                case 102: // Model Switch
+                    currentModel = packet[2] % MODEL_COUNT;
+                    break;
+
+                // ── Remote Preset Management ─────────────────────────────
+                case 118: // Save to Slot X
+                    save_preset(packet[2] % PRESET_COUNT);
+                    break;
+                case 119: // Load from Slot X
+                    load_preset(packet[2] % PRESET_COUNT);
+                    break;
+                case 103: seq_density_val = (packet[2] << 8); break;
+                case 104: seq_bpm_val     = (packet[2] << 8); break;
+                case 105: seq_map_val     = (packet[2] << 8); break;
+                
+                case 109: // Toggle Step
+                    gen_sequence ^= (1 << (packet[2] % 16));
+                    break;
+
+                case 111: // Request Pattern Sync
+                    if (tud_midi_mounted()) {
+                        uint8_t p1[4] = { 0x0B, 0xB0, 107, (uint8_t)(gen_sequence & 0x7F) };
+                        uint8_t p2[4] = { 0x0B, 0xB0, 108, (uint8_t)((gen_sequence >> 7) & 0x7F) };
+                        uint8_t p3[4] = { 0x0B, 0xB0, 110, (uint8_t)((gen_sequence >> 14) & 0x03) };
+                        tud_midi_packet_write(p1);
+                        tud_midi_packet_write(p2);
+                        tud_midi_packet_write(p3);
+                        // Also sync Scale/Root
+                        uint8_t p4[4] = { 0x0B, 0xB0, 112, currentRoot };
+                        uint8_t p5[4] = { 0x0B, 0xB0, 113, currentScale };
+                        tud_midi_packet_write(p4);
+                        tud_midi_packet_write(p5);
+                    }
+                    break;
+                
+                case 112: currentRoot = packet[2] % 12; break;
+                case 113: currentScale = packet[2] % 5; break;
+            }
+
+            if (targetPage != -1) {
+                if (targetKnob == 0) { params[targetPage].pMain = val; last_sent[targetPage].pMain = val; }
+                else if (targetKnob == 1) { params[targetPage].pX = val; last_sent[targetPage].pX = val; }
+                else if (targetKnob == 2) { params[targetPage].pY = val; last_sent[targetPage].pY = val; }
+
+                if (app && targetPage == app->currentPage) {
+                    if (targetKnob == 0) app->lockMain.relock(app->smoothMain);
+                    else if (targetKnob == 1) app->lockX.relock(app->smoothX);
+                    else if (targetKnob == 2) app->lockY.relock(app->smoothY);
+                }
+            }
+        }
+    }
+
+    void tuh_midi_rx_cb(uint8_t dev_addr, uint32_t num_packets) {
+        if (midi_dev_addr != dev_addr || num_packets == 0) return;
+        uint8_t cable_num;
+        uint8_t buffer[48];
+        while (true) {
+            int32_t bytesRead = tuh_midi_stream_read(dev_addr, &cable_num, buffer, sizeof(buffer));
+            if (bytesRead <= 0) break;
+            for (int i = 0; i < bytesRead; i += 3) {
+                handle_midi_message(buffer + i, bytesRead - i);
+            }
+        }
+    }
+
+    void tuh_midi_tx_cb(uint8_t dev_addr) { (void)dev_addr; }
 }

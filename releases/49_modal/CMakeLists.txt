@@ -13,6 +13,9 @@ target_sources(modal PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}/samples_flash.cpp
     ${CMAKE_CURRENT_LIST_DIR}/resonator_q15.cpp
     ${CMAKE_CURRENT_LIST_DIR}/string_q15.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/usb_midi_host.c
+    ${CMAKE_CURRENT_LIST_DIR}/usb_midi_host_app_driver.c
+    ${CMAKE_CURRENT_LIST_DIR}/usb_descriptors.c
 )
 
 # Include the current directory and the ComputerCard library
@@ -24,6 +27,7 @@ target_include_directories(modal PUBLIC
 # Essential: prevents reset boot failures
 target_compile_definitions(modal PUBLIC PICO_XOSC_STARTUP_DELAY_MULTIPLIER=64)
 target_compile_definitions(modal PRIVATE PICO_DEFAULT_UART_BAUD_RATE=115200)
+target_compile_definitions(modal PRIVATE CFG_TUSB_MCU=OPT_MCU_RP2040)
 
 # Run all code from RAM to eliminate flash cache jitter
 pico_set_binary_type(modal copy_to_ram)
@@ -47,4 +51,6 @@ target_link_libraries(modal
     hardware_timer
     pico_multicore
     hardware_clocks
+    tinyusb_host
+    tinyusb_device
 )
