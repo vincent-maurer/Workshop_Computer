@@ -146,7 +146,8 @@ enum ResonatorModel {
     MODEL_MODAL   = 0,   // Bank of bandpass filters (SVF) simulating modes
     MODEL_STRING  = 1,   // Single Karplus-Strong string
     MODEL_STRINGS = 2,   // Chord of 3 strings
-    MODEL_COUNT   = 3
+    MODEL_BORE    = 3,   // Wind style resonator (Bore)
+    MODEL_COUNT   = 4
 };
 
 // ── Core 1 Communication ────────────────────────────────────────────────────
@@ -398,7 +399,11 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         // Model toggle: changes the number of active modes for Modal
         int32_t model = currentModel;
         if (model == MODEL_MODAL) {
-            resonator.resolution = kMaxModesQ15;  // 24
+            resonator.resolution = kMaxModesQ15;
+            resonator.structure = ResonatorQ15::STRUC_MODAL;
+        } else if (model == MODEL_BORE) {
+            resonator.resolution = kMaxModesQ15;
+            resonator.structure = ResonatorQ15::STRUC_WIND;
         } else if (model == MODEL_STRING) {
             resonator.resolution = 6;
         } else {
@@ -625,7 +630,7 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         int32_t final_center = 0;
         int32_t final_sides = 0;
 
-        if (currentModel == MODEL_MODAL) {
+        if (currentModel == MODEL_MODAL || currentModel == MODEL_BORE) {
             int32_t res_center = 0;
             int32_t res_sides = 0;
             int32_t bow_strength_q15 = mul_q15(bow_level, smooth_env_value);
@@ -784,8 +789,8 @@ static const Preset factory_presets[8] = {
         {{16384, 16384, 0}, {0, 0, 0}, {25000, 8000, 28000}, {20000, 16384, 25000}, {10000, 30000, 28000}, {16384, 16384, 32767}}, {0}
     },
     {   // Slot 4: Wind Flute
-        PRESET_MAGIC, (uint32_t)MODEL_MODAL, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
-        {{0, 0, 0}, {32767, 12000, 16384}, {0, 0, 16384}, {12000, 18000, 22000}, {16384, 12000, 15000}, {24000, 16384, 32767}}, {0}
+        PRESET_MAGIC, (uint32_t)MODEL_BORE, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
+        {{0, 0, 0}, {32767, 12000, 16384}, {0, 0, 16384}, {30000, 18000, 22000}, {16384, 12000, 15000}, {24000, 16384, 32767}}, {0}
     },
     {   // Slot 5: Plucked Bass
         PRESET_MAGIC, (uint32_t)MODEL_STRING, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
@@ -795,9 +800,9 @@ static const Preset factory_presets[8] = {
         PRESET_MAGIC, (uint32_t)MODEL_STRINGS, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
         {{0, 0, 0}, {0, 0, 0}, {32767, 30000, 20000}, {16384, 32767, 30000}, {16384, 16384, 20000}, {20000, 16384, 32767}}, {0}
     },
-    {   // Slot 7: Space Particles
-        PRESET_MAGIC, (uint32_t)MODEL_MODAL, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
-        {{28000, 16384, 32767}, {10000, 32767, 32767}, {0, 0, 16384}, {25000, 32767, 28000}, {16384, 32767, 32767}, {16384, 16384, 32767}}, {0}
+    {   // Slot 7: Hollow Bottle
+        PRESET_MAGIC, (uint32_t)MODEL_BORE, 0xAAAA, {48,51,53,55,58,60,63,65,67,70,72,75,77,79,82,84}, 16384, 16384, 0, 0, 0,
+        {{0, 0, 0}, {20000, 8000, 16384}, {0, 0, 16384}, {2000, 10000, 32000}, {16384, 16384, 32767}, {16384, 16384, 32767}}, {0}
     }
 };
 
@@ -1226,7 +1231,7 @@ public:
         // Check pulse inputs at full 48kHz rate to avoid missing triggers.
         if (PulseIn1RisingEdge() || midi_trigger) {
             triggerBuffered = true;
-            midi_trigger = false;
+            // We'll clear midi_trigger below once we've sampled the pitch
         }
 
         // ── Read Raw Inputs ─────────────────────────────────────────────
@@ -1252,14 +1257,16 @@ public:
         cv1_acc = cv1_acc - (cv1_acc >> 8) + cv1_raw;
         int32_t cv1_smoothed = cv1_acc >> 8;
         
-        // Sample & Hold logic triggered by Pulse In 1
+        // Sample & Hold logic triggered by Pulse In 1 or MIDI Note On
         static bool last_p1_sh = false;
         bool p1_now = PulseIn1();
-        if (p1_now && !last_p1_sh) {
+        bool midi_trig_local = midi_trigger;
+        if ((p1_now && !last_p1_sh) || midi_trig_local) {
             // Sample: 1 Volt ≈ 410 raw. 1 Octave = 3072 in Q8.
-            int32_t raw_pitch = ((cv1_smoothed * 15) >> 1);
-            // Quantize to nearest semitone (256 in Q8)
+            int32_t raw_pitch = Connected(ComputerCard::CV1) ? ((cv1_smoothed * 15) >> 1) : 0;
+            // Quantize to nearest semitone (256 in Q8) and add MIDI offset
             cv1_pitch_q8 = ((raw_pitch + 128) & ~0xFF) + midi_pitch_q8;
+            midi_trigger = false; // Mark handled
         }
         last_p1_sh = p1_now;
 
@@ -1510,6 +1517,7 @@ extern "C" {
             midi_pitch_q8 = (packet[1] - 60) * 256;
             midi_gate = true;
             midi_trigger = true;
+            printf("MIDI Note On: %d\n", packet[1]);
         } else if (type == 0x80 || (type == 0x90 && packet[2] == 0)) { // Note Off
             if (midi_pitch_q8 == (packet[1] - 60) * 256) {
                 midi_gate = false;
@@ -1542,6 +1550,7 @@ extern "C" {
                 case 22: targetPage = 5; targetKnob = 1; break;
                 case 102: // Model Switch
                     currentModel = packet[2] % MODEL_COUNT;
+                    printf("Model Change: %ld\n", currentModel);
                     break;
 
                 // ── Remote Preset Management ─────────────────────────────

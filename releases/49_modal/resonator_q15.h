@@ -78,12 +78,18 @@ struct ResonatorQ15 {
     int32_t position_q15;   // 0..32767
     
     int32_t previous_position_q15;
+    int32_t previous_geometry_q15;
     int32_t modulation_frequency_q15;
     int32_t modulation_offset_q15;
     int32_t lfo_phase_q15;
     
     int32_t bow_signal_q15;
     size_t resolution;
+    
+    enum Structure {
+        STRUC_MODAL,
+        STRUC_WIND
+    } structure;
     
     // Filter bank
     SvfQ15 f_[kMaxModesQ15];

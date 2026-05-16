@@ -44,6 +44,7 @@ void ResonatorQ15::Init() {
     position_q15 = 32734;    // 0.999
     
     previous_position_q15 = position_q15;
+    previous_geometry_q15 = geometry_q15;
     // ~0.5Hz / 24kHz = 2.08e-5 → Q15 ≈ 1
     modulation_frequency_q15 = 1;
     modulation_offset_q15 = 3276; // 0.1
@@ -53,6 +54,7 @@ void ResonatorQ15::Init() {
     clock_divider = 0;
     num_modes_cached = 0;
     bow_signal_q15 = 0;
+    structure = STRUC_MODAL;
 }
 
 size_t __attribute__((section(".time_critical.ComputeFilters"))) ResonatorQ15::ComputeFilters() {
@@ -141,8 +143,9 @@ void __attribute__((section(".time_critical.resonator"))) ResonatorQ15::Process1
     size_t num_banded_wg = (kMaxBowedModesQ15 < num_modes)
         ? kMaxBowedModesQ15 : num_modes;
     
-    // Smooth position
+    // Smooth position and geometry
     previous_position_q15 += (position_q15 - previous_position_q15) >> 6;
+    previous_geometry_q15 += (geometry_q15 - previous_geometry_q15) >> 6;
     
     // 0.5Hz LFO for stereo modulation
     // Increment for 0.5Hz at 24kHz = 32768 / (24000 * 2) ≈ 0.68.
@@ -174,6 +177,24 @@ void __attribute__((section(".time_critical.resonator"))) ResonatorQ15::Process1
         amplitudes.NextQuadrature(amp_c, dummy_s);
         aux_amplitudes.NextQuadrature(amp_side, dummy_c);
         
+        if (structure == STRUC_WIND) {
+            if (i == 0) {
+                // Fundamental is always full
+            } else if ((i % 2) == 1) {
+                // Even harmonics (i=1,3,5...) fade in from 0.5 to 1.0
+                int32_t fade = (previous_geometry_q15 - 16384) << 1;
+                if (fade < 0) fade = 0;
+                amp_c = mul_q15(amp_c, fade);
+                amp_side = mul_q15(amp_side, fade);
+            } else {
+                // Odd harmonics (i=2,4,6...) fade in from 0.0 to 0.5
+                int32_t fade = previous_geometry_q15 << 1;
+                if (fade > 32767) fade = 32767;
+                amp_c = mul_q15(amp_c, fade);
+                amp_side = mul_q15(amp_side, fade);
+            }
+        }
+
         sum_center += mul_q15(s, amp_c);
         sum_side   += mul_q15(s, amp_side);
     }
