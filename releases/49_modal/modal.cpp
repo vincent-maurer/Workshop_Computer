@@ -34,6 +34,8 @@
 #include "plate_reverb_q15.h"
 #include "svf_q15.h"
 #include "string_q15.h"
+#include "diffuser_q15.h"
+#include "tube_q15.h"
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -169,6 +171,8 @@ static EnvelopeQ15 envelope;
 static ResonatorQ15 resonator;
 static StringQ15 strings[3];
 static PlateReverbQ15 reverb;
+static DiffuserQ15 diffuser;
+static TubeQ15 tube;
 
 static int32_t dc_ex_x = 0;
 static int32_t dc_ex_y = 0;
@@ -186,6 +190,8 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     resonator.Init();
     for (int i=0; i<3; i++) strings[i].Init();
     reverb.Init();
+    diffuser.Init();
+    tube.Init();
     
     // Set default exciter models
     bow_exciter.model = EXCITER_Q15_FLOW;
@@ -460,11 +466,26 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         int32_t bow_mix = mul_q15(mul_q15(bow_out, bow_level), e);
         bow_mix = (bow_mix * 5) >> 1;
 
-        // Blow contribution: blow * blow_level_scaled * e + external_blow
-        // Use 1.0x gain instead of 0.4x so the granular noise is clearly audible
-        int32_t blow_scaled = mul_q15(blow_level, 32767);  // * 1.0
-        int32_t b_mix = mul_q15(blow_out, blow_scaled);
-        b_mix = mul_q15(b_mix, e);
+        // Blow contribution: blow * blow_level_scaled * e + tube body
+        // blow_level < 0.5 (16384): scale to 0..1.0 for noise level
+        // blow_level >= 0.5: noise level stays at 0.4, and tube level increases
+        int32_t blow_noise_lvl;
+        int32_t tube_amt = 0;
+        if (blow_level < 16384) {
+            blow_noise_lvl = blow_level << 1; // 0..32767
+            tube_amt = 0;
+        } else {
+            blow_noise_lvl = 13107; // 0.4 fixed
+            tube_amt = (blow_level - 16384) << 1; // 0..32767
+        }
+        
+        int32_t b_noise = mul_q15(blow_out, blow_noise_lvl);
+        b_noise = mul_q15(b_noise, e);
+        
+        // Process Tube (Flute Body)
+        // Gain is reduced (tube_amt >> 3) to keep the Blow section from overpowering
+        int32_t tube_out = tube.Process(freq_q15, smooth_env_value, damping, blow_timbre, b_noise);
+        int32_t b_mix = b_noise + mul_q15(tube_out, tube_amt >> 3);
 
         // Strike contribution: strike * accent * strike_level_scaled + external
         // strike_level_scaled = min(strike_level * 1.25, 1.0) * 1.5
@@ -479,9 +500,24 @@ static void __not_in_flash_func(core1_dsp_loop)() {
             strike_bleed = mul_q15(strike_out, (strike_level - 26214) * 5);
         }
 
-        // Sum all internal excitation + External Audio In 1
-        int32_t excitation = bow_mix + b_mix + strike_mix + (ext_audio >> 2);
+        // Sum all components that are always diffused (Blow, External)
+        int32_t to_diffuse = b_mix + (ext_audio >> 2);
         
+        // Split strike component: diffusion depends on Strike Timbre
+        // Low Timbre = soft mallet (diffused), High Timbre = hard stick (direct)
+        // fade = 0 (low) -> strike_to_diffuse = strike_mix
+        // fade = 32767 (high) -> strike_to_diffuse = 0
+        int32_t strike_to_diffuse = strike_mix - mul_q15(strike_mix, strike_timbre);
+        int32_t strike_direct = strike_mix - strike_to_diffuse;
+        
+        to_diffuse += strike_to_diffuse;
+        
+        // Process the diffuser stage (advances pointers once)
+        int32_t diffused_excitation = diffuser.Process(to_diffuse);
+        
+        // Sum all parts: Bow (direct) + Diffused (Blow/Ext/SoftStrike) + Direct Strike
+        int32_t excitation = bow_mix + diffused_excitation + strike_direct;
+
         // DC block the excitation signal (critical for strings because strike is a positive impulse)
         excitation = DCBlockQ15(excitation, dc_ex_x, dc_ex_y);
 

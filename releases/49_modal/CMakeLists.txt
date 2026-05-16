@@ -11,6 +11,8 @@ target_sources(modal PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}/modal.cpp
     ${CMAKE_CURRENT_LIST_DIR}/resources_q15.cpp
     ${CMAKE_CURRENT_LIST_DIR}/samples_flash.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/resonator_q15.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/string_q15.cpp
 )
 
 # Include the current directory and the ComputerCard library

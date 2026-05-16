@@ -125,6 +125,7 @@ size_t __attribute__((section(".time_critical.ComputeFilters"))) ResonatorQ15::C
             int64_t res_term = ((int64_t)partial_frequency * q_base) >> 16;
             int32_t resonance_q15 = 32767 + (int32_t)res_term;
             if (resonance_q15 < 328) resonance_q15 = 328;
+            if (resonance_q15 > 32767000) resonance_q15 = 32767000; // Cap Q at ~1000
             
             f_[i].SetGQ(g_q14, resonance_q15);
             
@@ -245,7 +246,8 @@ void __attribute__((section(".time_critical.resonator"))) ResonatorQ15::Process1
     bow_signal_q15 = mul_q15(x, bow_gain);
     
     // Output scaling and stereo separation
-    // Scale down significantly (>>7) to provide headroom for the 24-mode stack.
-    center = sum_center >> 7;
-    sides = (sum_side - sum_center) >> 7;
+    // Scale down is removed to match string model volume.
+    // The soft limiter in modal.cpp will handle any remaining peaks.
+    center = sum_center;
+    sides = sum_side - sum_center;
 }

@@ -255,40 +255,53 @@ struct ExciterQ15 {
         
         if (flags & ENV_FLAG_GATE) {
             if (delay == 0) {
-                // Random amount: 1.05 + 0.5 * rand²
+                // Random amount for next jump: 1.05 + 0.5 * rand²
                 int32_t amt_r = RandomU();
                 int32_t amt_r2 = mul_q15(amt_r, amt_r);
-                // 1.05 in Q15 ≈ 34406, 0.5 in Q15 = 16384
                 int32_t amount = 34406 + (amt_r2 >> 1);
                 
-                // 70% chance go up, 30% chance go down
+                // Stochastic jump (70% up, 30% down)
                 uint32_t coin = FastRandQ15(rng_seed);
-                if (coin > 3006477107u) {  // > 0.7 * 2^32
-                    // Go up: particle_state *= amount
+                if (coin > 3006477107u) {
                     particle_state = mul_q15(particle_state, amount);
-                    int32_t cap = particle_range + 8192;  // +0.25
+                    int32_t cap = particle_range + 8192;
                     if (particle_state > cap) particle_state = cap;
-                } else if (coin < 1288490189u) {  // < 0.3 * 2^32
-                    // Go down: particle_state /= amount (≈ multiply by reciprocal)
-                    // 1/amount ≈ (32767 * 32767) / amount
+                } else if (coin < 1288490189u) {
                     if (amount > 0) {
                         particle_state = (int32_t)((32767LL * (int64_t)particle_state) / amount);
                     }
-                    if (particle_state < 655) particle_state = 655;  // ~0.02
+                    if (particle_state < 655) particle_state = 655;
                 }
                 
-                // Delay until next event: state * 0.15 * sample_rate / Q15
-                // At 24kHz: 0.15 * 24000 / 32767 ≈ 0.11 samples per unit
-                // So delay ≈ particle_state * 0.11
-                delay = (uint32_t)((particle_state * 3600) >> 15);
+                // Compute base delay: state * 0.05 * sample_rate
+                // Reduced constant from 3600 to 1200 for 3x higher density
+                uint32_t base_delay = (uint32_t)((particle_state * 1200) >> 15);
+                
+                // --- SCATTERING LOGIC ---
+                // Use 'signature' to control the amount of timing jitter (scattering)
+                // If signature is high, delay is randomized up to +/- 100%
+                int32_t jitter_range = mul_q15(base_delay, signature);
+                int32_t jitter = (int32_t)(((int64_t)RandomS() * jitter_range) >> 15);
+                delay = base_delay + jitter;
                 if (delay < 1) delay = 1;
                 
-                // Compute amplitude: particle_state * pulse_amp * (1 - (1-range)²)
+                // Compute amplitude
                 int32_t gain_inv = 32767 - particle_range;
                 int32_t gain = 32767 - mul_q15(gain_inv, gain_inv);
-                out = mul_q15(mul_q15(particle_state, GetPulseAmplitude()), gain);
                 
-                // Decay range: range *= 1 - decay_factor² * 0.5
+                // PER-PARTICLE TIMBRE SCATTERING
+                // Briefly randomize the filter cutoff for this specific particle
+                int32_t p_timbre = timbre + (int32_t)(((int64_t)RandomS() * signature) >> 15);
+                if (p_timbre < 1000) p_timbre = 1000;
+                if (p_timbre > 32000) p_timbre = 32000;
+                
+                // Get pulse amp based on randomized timbre
+                int32_t p_idx = (p_timbre * 256) >> 15;
+                int32_t p_amp = lut_approx_svf_gain_q15[p_idx > 256 ? 256 : p_idx];
+                
+                out = mul_q15(mul_q15(particle_state, p_amp), gain);
+                
+                // Decay density
                 int32_t df = 32767 - parameter;
                 int32_t df2 = mul_q15(df, df);
                 particle_range = mul_q15(particle_range, 32767 - (df2 >> 1));

@@ -108,26 +108,35 @@ struct SvfQ15 {
         int32_t x = x_in << 6;
         
         // hp = (in - r*s1 - g*s1 - s2) * h
-        // r and g are Q14, state1 is clamped to ±100M
         int32_t rg_sum = r + g;
         int32_t rgs1 = (int32_t)(((int64_t)rg_sum * state1) >> 14);
         int32_t hp = (int32_t)(((int64_t)(x - rgs1 - state2) * h) >> 15);
         
-        int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
+        // Use int64 for state update intermediates to prevent overflow at high frequencies
+        int64_t gbp_64 = ((int64_t)g * hp) >> 14;
+        // Safety cap to prevent int32 overflow during state addition
+        if (gbp_64 > 1000000000) gbp_64 = 1000000000;
+        else if (gbp_64 < -1000000000) gbp_64 = -1000000000;
+        int32_t gbp = (int32_t)gbp_64;
+
         int32_t bp = gbp + state1;
         state1 = gbp + bp;  // Double integration
         
-        int32_t glp = (int32_t)(((int64_t)g * bp) >> 14);
+        int64_t glp_64 = ((int64_t)g * bp) >> 14;
+        if (glp_64 > 1000000000) glp_64 = 1000000000;
+        else if (glp_64 < -1000000000) glp_64 = -1000000000;
+        int32_t glp = (int32_t)glp_64;
+
         int32_t lp = glp + state2;
         state2 = glp + lp;
         
         // Anti-windup: clamp slightly below int32 max to prevent overflow
-        if (state1 > 100000000) state1 = 100000000;
-        else if (state1 < -100000000) state1 = -100000000;
-        if (state2 > 100000000) state2 = 100000000;
-        else if (state2 < -100000000) state2 = -100000000;
+        if (state1 > 500000000) state1 = 500000000;
+        else if (state1 < -500000000) state1 = -500000000;
+        if (state2 > 500000000) state2 = 500000000;
+        else if (state2 < -500000000) state2 = -500000000;
         
-        // Branchless mode selection (avoid switch overhead in hot loop)
+        // Branchless mode selection
         if (mode == FILT_BP) return bp >> 6;
         if (mode == FILT_LP) return lp >> 6;
         if (mode == FILT_BPN) return (int32_t)(((int64_t)bp * r) >> 14) >> 6;

@@ -147,8 +147,9 @@ def main():
     if svf_gain:
         max_gain = max(abs(v) for v in svf_gain)
         print(f"// lut_approx_svf_gain: {len(svf_gain)} entries, max={max_gain:.4f}")
-        # Gain ranges from ~0.18 to ~1.0, fits in Q15
-        print(format_array_int16('lut_approx_svf_gain_q15', to_q15(svf_gain)))
+        # Gain ranges from ~1.18 to ~420.0, output as int32_t in Q15
+        q15_gain = [int(round(v * 32768.0)) for v in svf_gain]
+        print(format_array_int32('lut_approx_svf_gain_q15', q15_gain))
         print()
     
     # ── Stiffness table ──

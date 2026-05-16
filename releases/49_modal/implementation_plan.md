@@ -297,12 +297,14 @@ Delivered:
 - Envelope shape parameter maps AD/ADSR/AR (faithfully ported from voice.cc)
 - Strike meta sweeps Mallet→Plectrum→Particles
 - Bow strength, damping feedback, strike bleed all computed
-- GranularSamplePlayer and SamplePlayer omitted (need ~1MB flash samples)
-- Tube waveguide and Diffuser deferred to Phase 3 integration
-- Build: 31KB flash, 34KB RAM (87% RAM free for resonator)
+- Sample player exciter SIMPLIFIED — use a few short samples from flash
+- Tube waveguide ✅ DONE (parallel feedback delay model for flute sounds)
+- Diffuser ✅ DONE (4x allpass chain with "Mallet Smearing" logic)
+- Particles & Scattering ✅ DONE (stochastic impulse cloud with jitter and timbre randomization)
+- Build: 32KB flash, 38KB RAM (57% total RAM used)
 
 ### Phase 3: Resonator Port ✱ NEXT
-**Files:** `resonator_q15.h`
+**Files:** `resonator_q15.h`, `diffuser_q15.h` (DONE), `tube_q15.h` (DONE), `exciter_q15.h` (SCATTERING DONE)
 
 1. Port `Resonator` (modal synthesis) to Q15:
    - Start with **24 modes** (adjustable)

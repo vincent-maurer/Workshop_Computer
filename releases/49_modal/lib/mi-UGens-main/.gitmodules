@@ -1,0 +1,4 @@
+
+[submodule "projects/MiBraids/libsamplerate"]
+	path = projects/MiBraids/libsamplerate
+	url = https://github.com/libsndfile/libsamplerate
