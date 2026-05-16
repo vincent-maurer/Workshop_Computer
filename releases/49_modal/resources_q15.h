@@ -22,7 +22,7 @@ extern const int16_t lut_sine_q15[];       // [4097]
 extern const int16_t lut_approx_svf_g_q14[];     // [257]
 extern const int16_t lut_approx_svf_r_q14[];     // [257]
 extern const int16_t lut_approx_svf_h_q15[];     // [257]
-extern const int16_t lut_approx_svf_gain_q15[];  // [257]
+extern const int32_t lut_approx_svf_gain_q15[];  // [257]
 
 // ── Stiffness table (Q15, maps geometry to string inharmonicity) ────────────
 extern const int16_t lut_stiffness_q15[];  // [257]

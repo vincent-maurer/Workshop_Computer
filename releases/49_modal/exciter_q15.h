@@ -325,9 +325,9 @@ struct ExciterQ15 {
         
         // out = particle_state + (sample - 0.5 - particle_state) * scale
         int32_t centered = sample - 16384 - particle_state;
-        int32_t out = particle_state + mul_q15(centered, scale);
+        particle_state = particle_state + mul_q15(centered, scale);
         
-        return out;
+        return particle_state;
     }
     
     // ── Noise ───────────────────────────────────────────────────────────
@@ -361,7 +361,7 @@ struct ExciterQ15 {
         // Simplified: increment = 131072 * 2^((timbre*72/32767 - 60) / 12)
         // Use a rough exponential: timbre² * 524288 / 32767 + 4096
         int32_t t = timbre;
-        uint32_t phase_increment = 4096 + (uint32_t)((t * t * 16) >> 15);
+        uint32_t phase_increment = 4096 + (uint32_t)(((int64_t)t * t * 16) >> 15);
         
         // Base pointer offset from signature (different texture regions)
         uint32_t sig_offset = (uint32_t)((signature * 8192) >> 15);
@@ -416,7 +416,7 @@ struct ExciterQ15 {
         
         // Phase increment from timbre (pitch control)
         // At timbre=0.5: normal speed (65536). Range: -36 to +43 semitones
-        uint32_t phase_increment = 8192 + (uint32_t)((timbre * timbre * 4) >> 15);
+        uint32_t phase_increment = 8192 + (uint32_t)(((int64_t)timbre * timbre * 4) >> 15);
         
         if (flags & ENV_FLAG_RISING) {
             damp_state = 0;

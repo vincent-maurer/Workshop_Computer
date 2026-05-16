@@ -96,16 +96,22 @@ struct SvfQ15 {
         h = other.h;
     }
     
-    // ── Single-sample processing ────────────────────────────────────────
-    
     /// Process one sample, returning the selected filter mode output.
     /// Input x is Q15. Returns Q15.
-    int32_t __not_in_flash_func(Process)(int32_t x, FilterModeQ15 mode) {
+    /// OPTIMIZED: Uses 32-bit multiplies where possible.
+    /// g is Q14 (max ~16384), states are clamped to ±2M.
+    /// g * state ≤ 16384 * 2000000 = 32,768,000,000 — EXCEEDS int32!
+    /// So we keep int64 for g*state but optimize the shift pattern.
+    /// h is Q15 (max 32767), hp is bounded → h*hp fits in 32-bit after shift.
+    int32_t Process(int32_t x_in, FilterModeQ15 mode) {
+        // Shift input up by 6 bits to preserve internal precision at low frequencies
+        int32_t x = x_in << 6;
+        
         // hp = (in - r*s1 - g*s1 - s2) * h
-        // All multiplies: Q15 * Q14 for g/r terms, Q15 * Q15 for h
-        int32_t rs1 = (int32_t)(((int64_t)r * state1) >> 14);  // Q14*Q15>>14 = Q15
-        int32_t gs1 = (int32_t)(((int64_t)g * state1) >> 14);
-        int32_t hp = (int32_t)(((int64_t)(x - rs1 - gs1 - state2) * h) >> 15);
+        // r and g are Q14, state1 is clamped to ±100M
+        int32_t rg_sum = r + g;
+        int32_t rgs1 = (int32_t)(((int64_t)rg_sum * state1) >> 14);
+        int32_t hp = (int32_t)(((int64_t)(x - rgs1 - state2) * h) >> 15);
         
         int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
         int32_t bp = gbp + state1;
@@ -115,21 +121,26 @@ struct SvfQ15 {
         int32_t lp = glp + state2;
         state2 = glp + lp;
         
-        switch (mode) {
-            case FILT_LP:  return lp;
-            case FILT_BP:  return bp;
-            case FILT_BPN: return (int32_t)(((int64_t)bp * r) >> 14);
-            case FILT_HP:  return hp;
-            default:       return lp;
-        }
+        // Anti-windup: clamp slightly below int32 max to prevent overflow
+        if (state1 > 100000000) state1 = 100000000;
+        else if (state1 < -100000000) state1 = -100000000;
+        if (state2 > 100000000) state2 = 100000000;
+        else if (state2 < -100000000) state2 = -100000000;
+        
+        // Branchless mode selection (avoid switch overhead in hot loop)
+        if (mode == FILT_BP) return bp >> 6;
+        if (mode == FILT_LP) return lp >> 6;
+        if (mode == FILT_BPN) return (int32_t)(((int64_t)bp * r) >> 14) >> 6;
+        return hp >> 6;
     }
     
     /// Process one sample, returning both BP and LP simultaneously.
     /// Used by the resonator where we need both for output mixing.
-    void __not_in_flash_func(Process2)(int32_t x, int32_t &out_bp, int32_t &out_lp) {
-        int32_t rs1 = (int32_t)(((int64_t)r * state1) >> 14);
-        int32_t gs1 = (int32_t)(((int64_t)g * state1) >> 14);
-        int32_t hp = (int32_t)(((int64_t)(x - rs1 - gs1 - state2) * h) >> 15);
+    void Process2(int32_t x_in, int32_t &out_bp, int32_t &out_lp) {
+        int32_t x = x_in << 6;
+        int32_t rg_sum = r + g;
+        int32_t rgs1 = (int32_t)(((int64_t)rg_sum * state1) >> 14);
+        int32_t hp = (int32_t)(((int64_t)(x - rgs1 - state2) * h) >> 15);
         
         int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
         int32_t bp = gbp + state1;
@@ -139,8 +150,14 @@ struct SvfQ15 {
         int32_t lp = glp + state2;
         state2 = glp + lp;
         
-        out_bp = bp;
-        out_lp = lp;
+        // Anti-windup: clamp slightly below int32 max to prevent overflow
+        if (state1 > 100000000) state1 = 100000000;
+        else if (state1 < -100000000) state1 = -100000000;
+        if (state2 > 100000000) state2 = 100000000;
+        else if (state2 < -100000000) state2 = -100000000;
+        
+        out_bp = bp >> 6;
+        out_lp = lp >> 6;
     }
     
     // ── Block processing ────────────────────────────────────────────────
@@ -149,7 +166,7 @@ struct SvfQ15 {
     /// gain1/gain2 are Q15 mixing gains for two output buses.
     /// This is the pattern used by the resonator: each mode's SVF adds its
     /// contribution to the output with position-dependent L/R gains.
-    void __not_in_flash_func(ProcessAdd)(const int32_t* in, 
+    void ProcessAdd(const int32_t* in, 
                                          int32_t* out1, int32_t* out2,
                                          int32_t size,
                                          int32_t gain1_q15, int32_t gain2_q15,
@@ -157,10 +174,11 @@ struct SvfQ15 {
         int32_t s1 = state1;
         int32_t s2 = state2;
         
+        int32_t rg_sum = r + g;
+        
         while (size--) {
-            int32_t rs1 = (int32_t)(((int64_t)r * s1) >> 14);
-            int32_t gs1 = (int32_t)(((int64_t)g * s1) >> 14);
-            int32_t hp = (int32_t)(((int64_t)(*in - rs1 - gs1 - s2) * h) >> 15);
+            int32_t rgs1 = (int32_t)(((int64_t)rg_sum * s1) >> 14);
+            int32_t hp = (int32_t)(((int64_t)(*in - rgs1 - s2) * h) >> 15);
             
             int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
             int32_t bp = gbp + s1;
@@ -191,14 +209,15 @@ struct SvfQ15 {
     }
     
     /// Simple block process: filter in-place.
-    void __not_in_flash_func(ProcessBlock)(int32_t* in_out, int32_t size, FilterModeQ15 mode) {
+    void ProcessBlock(int32_t* in_out, int32_t size, FilterModeQ15 mode) {
         int32_t s1 = state1;
         int32_t s2 = state2;
         
+        int32_t rg_sum = r + g;
+        
         while (size--) {
-            int32_t rs1 = (int32_t)(((int64_t)r * s1) >> 14);
-            int32_t gs1 = (int32_t)(((int64_t)g * s1) >> 14);
-            int32_t hp = (int32_t)(((int64_t)(*in_out - rs1 - gs1 - s2) * h) >> 15);
+            int32_t rgs1 = (int32_t)(((int64_t)rg_sum * s1) >> 14);
+            int32_t hp = (int32_t)(((int64_t)(*in_out - rgs1 - s2) * h) >> 15);
             
             int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
             int32_t bp = gbp + s1;

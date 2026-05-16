@@ -59,6 +59,22 @@ static inline int32_t abs_q15(int32_t x) {
     return x < 0 ? -x : x;
 }
 
+/// Simple soft clipper for Q15 range (±32767).
+/// Threshold is 0.75 (24576). Above this, the curve compresses 4:1.
+static inline int32_t SoftLimitQ15(int32_t x) {
+    if (x > 24576) {
+        int32_t delta = x - 24576;
+        int32_t limited = 24576 + (delta >> 2);
+        return (limited > 32767) ? 32767 : limited;
+    }
+    if (x < -24576) {
+        int32_t delta = x + 24576;
+        int32_t limited = -24576 + (delta >> 2);
+        return (limited < -32768) ? -32768 : limited;
+    }
+    return x;
+}
+
 // ── Linear Interpolation ────────────────────────────────────────────────────
 
 /// Interpolate a Q15 int16 table with 8-bit fractional index.
@@ -147,37 +163,18 @@ static inline int32_t CosineQ15_U32(uint32_t phase) {
 // ── Soft Limiting ───────────────────────────────────────────────────────────
 
 /// Soft limiter using rational approximation: x * (27 + x²) / (27 + 9x²)
-/// Input and output are Q15. Provides gentle saturation near ±1.0.
-/// Approximates tanh-like behavior without any float math.
-static inline int32_t SoftLimitQ15(int32_t x) {
-    // Scale down to avoid overflow in x² computation
-    // x is Q15 (max 32767). x² would be Q30, too large.
-    // Work in Q12 to keep x² within int32 range.
-    int32_t x12 = x >> 3;  // Q15 → Q12 (max ±4095)
-    int32_t x2 = (x12 * x12) >> 12;  // Q12 × Q12 >> 12 = Q12
-    
-    // numerator = x * (27 + x²) where 27 is in Q12 = 27<<12 = 110592
-    int32_t num = (int32_t)(((int64_t)x * (110592 + x2)) >> 12);
-    
-    // denominator = 27 + 9*x² in Q12
-    int32_t den = 110592 + 9 * x2;
-    
-    if (den == 0) return 0;
-    
-    // Result: num / den, but we need Q15 output
-    // num is ~Q15 (since x was Q15 and (27+x²)/Q12 ≈ 27 at low x)
-    // den is ~Q12
-    // So result = (num << 12) / den... but that risks overflow.
-    // Simpler: result = (num * 4096) / den, capped to Q15
-    int32_t result = (int32_t)(((int64_t)num << 12) / den);
-    return sat_q15(result);
-}
-
-/// Hard clip to ±1.0 (Q15)
+/// Simple piecewise linear soft clip. Very cheap (no 64-bit division).
 static inline int32_t SoftClipQ15(int32_t x) {
-    if (x < -3 * 10922) return -32767;  // -3.0 in Q15-ish
-    if (x >  3 * 10922) return  32767;
-    return SoftLimitQ15(x);
+    if (x > 24000) {
+        x = 24000 + ((x - 24000) >> 2);
+    } else if (x < -24000) {
+        x = -24000 + ((x + 24000) >> 2);
+    }
+    
+    // Hard limit at Q15 bounds
+    if (x > 32767) return 32767;
+    if (x < -32768) return -32768;
+    return x;
 }
 
 // ── DC Blocker ──────────────────────────────────────────────────────────────
@@ -211,25 +208,29 @@ static inline int32_t RandomQ15(uint32_t &seed) {
 /// pitch_q8 should be in range 0..32767 (maps to MIDI 0..127.99)
 /// Returns a uint32 phase increment for a uint32 accumulator.
 static inline uint32_t MidiToIncrementU32(int32_t pitch_q8) {
-    // Clamp to valid range
-    pitch_q8 = 32768 + sat_q15(pitch_q8 - 20480);  // Center around middle C
-    int32_t hi = pitch_q8 >> 8;     // Semitone index (0..255)
-    int32_t lo = pitch_q8 & 0xFF;   // Fractional semitone (0..255)
+    // pitch_q8 is MIDI * 256. Index 107 in LUT is MIDI 69 (A4).
+    // So index = (pitch_q8 >> 8) + (107 - 69) = pitch + 38.
+    int32_t index_q8 = pitch_q8 + (38 << 8);
+    if (index_q8 < 0) index_q8 = 0;
+    if (index_q8 > 65280) index_q8 = 65280;
+    
+    int32_t hi = index_q8 >> 8;
+    int32_t lo = index_q8 & 0xFF;
     
     uint32_t inc_hi = lut_midi_to_increment_high_u32[hi];
     int32_t f_lo = lut_midi_to_f_low_q15[lo];
     
-    // inc = inc_hi * f_lo, where inc_hi is raw uint32 and f_lo is Q15
-    // Result: phase increment per sample
     return (uint32_t)(((uint64_t)inc_hi * (uint32_t)f_lo) >> 15);
 }
 
 /// Convert a MIDI pitch (Q8) to a frequency ratio (Q8).
-/// Returns freq_ratio such that frequency = base_freq * (ratio / 256)
 static inline int32_t MidiToFreqRatioQ8(int32_t pitch_q8) {
-    pitch_q8 = 32768 + sat_q15(pitch_q8 - 20480);
-    int32_t hi = pitch_q8 >> 8;
-    int32_t lo = pitch_q8 & 0xFF;
+    int32_t index_q8 = pitch_q8 + (38 << 8);
+    if (index_q8 < 0) index_q8 = 0;
+    if (index_q8 > 65280) index_q8 = 65280;
+    
+    int32_t hi = index_q8 >> 8;
+    int32_t lo = index_q8 & 0xFF;
     
     int32_t f_hi = lut_midi_to_f_high_q8[hi];
     int32_t f_lo = lut_midi_to_f_low_q15[lo];
@@ -265,42 +266,25 @@ static inline int32_t AccentGainQ14(int32_t strength_q15) {
 /// Generates cos(2πf) for a given normalized frequency.
 /// All state in Q15.
 struct CosineOscQ15 {
-    int32_t y0, y1;
-    int32_t iir_coeff;     // 2*cos(2πf) in Q14
-    int32_t init_amp;      // iir_coeff * 0.25 in Q14
+    uint32_t phase;
+    uint32_t phase_inc;
     
-    /// Initialize with approximate mode (cheap, good for sub-audio rates)
     void Init(int32_t freq_q15) {
-        // Approximate: coeff = 16 * f * (1 - 2f) where f is shifted by 0.25
-        // freq_q15 is 0..32767 mapping to 0..1.0 normalized frequency
-        int32_t f = freq_q15 - 8192;  // subtract 0.25 in Q15
-        int32_t sign = 16;
-        if (f < 0) {
-            f = -f;
-        } else {
-            if (f > 16384) {
-                f -= 16384;
-            } else {
-                sign = -16;
-            }
-        }
-        // coeff = sign * f * (1 - 2f) / 32767² ... simplified
-        int32_t two_f = (f * 2);
-        iir_coeff = (int32_t)(((int64_t)sign * f * (32767 - two_f)) >> 30);
-        init_amp = iir_coeff >> 2;  // ÷4
+        // freq_q15 (0..32767) maps to 0..0.5 normalized frequency
+        // phase_inc = freq * 2^32
+        phase_inc = (uint32_t)freq_q15 << 17;
         Start();
     }
     
     void Start() {
-        y1 = init_amp;
-        y0 = 16384;  // 0.5 in Q15
+        phase = phase_inc;
     }
     
-    int32_t Next() {
-        int32_t temp = y0;
-        y0 = mul_q15(iir_coeff, y0) - y1;
-        y1 = temp;
-        return temp + 16384;  // shift up by 0.5 to get 0..1 range
+    void NextQuadrature(int32_t &c, int32_t &s) {
+        // c = cos(phase), s = sin(phase)
+        c = lut_sine_q15[(phase + 1073741824u) >> 20];
+        s = lut_sine_q15[phase >> 20];
+        phase += phase_inc;
     }
 };
 
