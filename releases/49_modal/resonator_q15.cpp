@@ -60,7 +60,7 @@ void ResonatorQ15::Init() {
 size_t __attribute__((section(".time_critical.ComputeFilters"))) ResonatorQ15::ComputeFilters() {
     // stiffness = Interpolate(lut_stiffness, geometry_, 256.0f)
     int32_t stiffness_idx = (geometry_q15 * 256) >> 7;
-    int32_t stiffness = InterpolateQ15(lut_stiffness_q15, stiffness_idx);
+    int32_t stiffness = (structure == STRUC_WIND) ? 0 : InterpolateQ15(lut_stiffness_q15, stiffness_idx);
     
     int32_t harmonic = frequency_q15;
     int32_t stretch_factor = 32767; // 1.0 in Q15
@@ -70,6 +70,14 @@ size_t __attribute__((section(".time_critical.ComputeFilters"))) ResonatorQ15::C
     int32_t q_idx = (damping_adj * 256) >> 7;
     int32_t q_raw_q16 = InterpolateQ16(lut_4_decades_q16, q_idx);
     int64_t q_running = (int64_t)q_raw_q16 * 500;
+    
+    // Wind instruments are heavily damped air columns, they shouldn't ring like metal plates.
+    if (structure == STRUC_WIND) {
+        // q_running is heavily scaled. Max is typically ~100M+ for metal.
+        // Divide by 8 and cap to ~20M to keep Q around 30-50.
+        q_running = (q_running >> 3) + 2000000;
+        if (q_running > 25000000) q_running = 25000000;
+    }
     
     // brightness attenuation (ba)
     int32_t ba = 32767 - geometry_q15;
@@ -127,7 +135,6 @@ size_t __attribute__((section(".time_critical.ComputeFilters"))) ResonatorQ15::C
         
         harmonic += frequency_q15;
     }
-    
     return num_modes;
 }
 
@@ -167,6 +174,18 @@ void __attribute__((section(".time_critical.resonator"))) ResonatorQ15::Process1
     int32_t sum_center = 0;
     int32_t sum_side = 0;
     
+    int32_t fade_even = 32767;
+    int32_t fade_odd = 32767;
+    if (structure == STRUC_WIND) {
+        // Pre-calculate fades outside the loop
+        fade_even = (previous_geometry_q15 - 16384) << 1;
+        if (fade_even < 0) fade_even = 0;
+        else if (fade_even > 32767) fade_even = 32767;
+        
+        fade_odd = previous_geometry_q15 << 1;
+        if (fade_odd > 32767) fade_odd = 32767;
+    }
+
     amplitudes.Start();
     aux_amplitudes.Start();
     for (size_t i = 0; i < num_modes; ++i) {
@@ -178,20 +197,10 @@ void __attribute__((section(".time_critical.resonator"))) ResonatorQ15::Process1
         aux_amplitudes.NextQuadrature(amp_side, dummy_c);
         
         if (structure == STRUC_WIND) {
-            if (i == 0) {
-                // Fundamental is always full
-            } else if ((i % 2) == 1) {
-                // Even harmonics (i=1,3,5...) fade in from 0.5 to 1.0
-                int32_t fade = (previous_geometry_q15 - 16384) << 1;
-                if (fade < 0) fade = 0;
-                amp_c = mul_q15(amp_c, fade);
-                amp_side = mul_q15(amp_side, fade);
-            } else {
-                // Odd harmonics (i=2,4,6...) fade in from 0.0 to 0.5
-                int32_t fade = previous_geometry_q15 << 1;
-                if (fade > 32767) fade = 32767;
-                amp_c = mul_q15(amp_c, fade);
-                amp_side = mul_q15(amp_side, fade);
+            if (i > 0) {
+                int32_t f = (i & 1) ? fade_even : fade_odd;
+                amp_c = mul_q15(amp_c, f);
+                amp_side = mul_q15(amp_side, f);
             }
         }
 
@@ -199,36 +208,49 @@ void __attribute__((section(".time_critical.resonator"))) ResonatorQ15::Process1
         sum_side   += mul_q15(s, amp_side);
     }
     
-    // Bowed modes
-    int32_t bow_signal = 0;
-    int32_t input_bow = input + bow_signal_q15;
-    
-    amplitudes.Start();
-    for (size_t i = 0; i < num_banded_wg; ++i) {
-        int32_t s = mul_q15(d_bow_[i].Read(), 32440); // 0.99
-        bow_signal += s;
-        s = f_bow_[i].Process(input_bow + s, FILT_BPN);
-        d_bow_[i].Write(s);
+    // Bowed modes & Bow Table
+    // Skip if bow_strength is low to save CPU (avoid division) and prevent ringing
+    if (bow_strength > 400) {
+        int32_t bow_signal = 0;
+        int32_t input_bow = input + bow_signal_q15;
         
-        int32_t amp_c, dummy_s;
-        amplitudes.NextQuadrature(amp_c, dummy_s);
-        sum_center += mul_q15(s, amp_c) << 3;
+        amplitudes.Start();
+        for (size_t i = 0; i < num_banded_wg; ++i) {
+            int32_t s = mul_q15(d_bow_[i].Read(), 32440); // 0.99
+            bow_signal += s;
+            s = f_bow_[i].Process(input_bow + s, FILT_BPN);
+            d_bow_[i].Write(s);
+            
+            int32_t amp_c, dummy_s;
+            amplitudes.NextQuadrature(amp_c, dummy_s);
+            sum_center += mul_q15(s, amp_c) << 1; // Reduced gain from <<3 to <<1
+        }
+        
+        // Bow Table (Expensive Division!)
+        int32_t velocity = bow_strength;
+        int32_t x = mul_q15(4259, velocity) - bow_signal;
+        int32_t abs_six_x = abs_q15(x * 6);
+        int32_t denom = abs_six_x + 24576;
+        
+        int64_t d2 = ((int64_t)denom * denom) >> 15;
+        int32_t d4 = (int32_t)((d2 * d2) >> 15);
+        
+        // Use a 32-bit division instead of 64-bit if possible for speed
+        int32_t bow_gain = (d4 < 1) ? 8028 : (int32_t)(268435456L / d4);
+        if (bow_gain < 82) bow_gain = 82;
+        if (bow_gain > 8028) bow_gain = 8028;
+        
+        bow_signal_q15 = mul_q15(x, bow_gain);
+    } else {
+        bow_signal_q15 = 0;
     }
     
-    // Bow Table
-    int32_t velocity = bow_strength;
-    int32_t x = mul_q15(4259, velocity) - bow_signal;
-    int32_t abs_six_x = abs_q15(x * 6);
-    int32_t denom = abs_six_x + 24576;
-    
-    int64_t d2 = ((int64_t)denom * denom) >> 15;
-    int32_t d4 = (int32_t)((d2 * d2) >> 15);
-    int32_t bow_gain = (d4 < 1) ? 8028 : (int32_t)(268435456LL / d4);
-    if (bow_gain < 82) bow_gain = 82;
-    if (bow_gain > 8028) bow_gain = 8028;
-    
-    bow_signal_q15 = mul_q15(x, bow_gain);
-    
+    // Saturation checks for final output
+    if (sum_center > 32767) sum_center = 32767;
+    if (sum_center < -32768) sum_center = -32768;
+    if (sum_side > 32767) sum_side = 32767;
+    if (sum_side < -32768) sum_side = -32768;
+
     center = sum_center;
     sides = sum_side - sum_center;
 }

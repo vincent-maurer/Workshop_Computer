@@ -42,10 +42,11 @@ void __attribute__((section(".time_critical.string_process"))) StringQ15::Proces
     if (lp_coef > 30000) lp_coef = 30000;
     if (lp_coef < 100) lp_coef = 100;
     
-    int32_t hp_coef = 100 + mul_q15(damping_q15_, 500); // 100 to 600
+    int32_t hp_coef = 600 - mul_q15(damping_q15_, 500); // 600 to 100
     
-    // Feedback amount
-    int32_t feedback = 32700 - mul_q15(damping_q15_, 4000); // 32700 to 28700
+    // Feedback amount: 28700 (short) to 32700 (long)
+    // Matches Modal behavior: Max Knob = Max Decay
+    int32_t feedback = 28700 + mul_q15(damping_q15_, 4000); 
     
     // Comb delay (pickup position)
     int32_t clamped_pos = 16384 - mul_q15(32112, (position_q15_ > 16384 ? position_q15_ - 16384 : 16384 - position_q15_));
