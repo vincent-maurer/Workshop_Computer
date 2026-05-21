@@ -148,10 +148,11 @@ struct MIDIState {
 
 // ── Resonator Model ─────────────────────────────────────────────────────────
 enum ResonatorModel {
-  MODEL_MODAL = 0,   // Bank of bandpass filters (SVF) simulating modes
-  MODEL_STRING = 1,  // Single Karplus-Strong string
-  MODEL_STRINGS = 2, // Chord of 3 strings
-  MODEL_COUNT = 3
+  MODEL_MODAL = 0,        // Bank of bandpass filters (SVF) simulating modes
+  MODEL_STRING = 1,       // Single Karplus-Strong string
+  MODEL_STRINGS_POLY = 2, // 3-voice polyphonic strings (round-robin voicing)
+  MODEL_CHORDS = 3,       // Chord of 3 strings (triggered together)
+  MODEL_COUNT = 4
 };
 
 // ── Core 1 Communication ────────────────────────────────────────────────────
@@ -182,6 +183,8 @@ volatile int32_t cv2_strength = 0;  // Strength from CV In 2 (Q15)
 volatile int32_t audio_in1_q15 = 0; // Blow external input (Q15)
 volatile int32_t audio_in2_q15 = 0; // Strike external input (Q15)
 volatile int32_t currentModel = MODEL_MODAL;
+static volatile int32_t poly_pitch_q8[4] = {6144, 6144, 6144, 6144};
+static volatile int poly_voice = 0;
 
 // ── MIDI State ──────────────────────────────────────────────────────────────
 volatile int32_t midi_pitch_q8 = 0; // MIDI note pitch (Q8)
@@ -368,10 +371,11 @@ static ExciterQ15 blow_exciter;
 static ExciterQ15 strike_exciter;
 static EnvelopeQ15 envelope;
 static ResonatorQ15 resonator;
-static StringQ15 strings[3];
+static StringQ15 strings[4];
 static DiffuserQ15 diffuser;
 static TubeQ15 tube;
 static PlateReverbQ15 reverb; // Moved to Core 0 context logically
+static OnePoleFilterQ15 excitation_filter;
 
 static int32_t dc_ex_x = 0;
 static int32_t dc_ex_y = 0;
@@ -391,10 +395,11 @@ static void __not_in_flash_func(core1_dsp_loop)() {
   strike_exciter.Init(24680);
   envelope.Init();
   resonator.Init();
-  for (int i = 0; i < 3; i++)
+  for (int i = 0; i < 4; i++)
     strings[i].Init();
   diffuser.Init();
   tube.Init();
+  excitation_filter.Init();
 
   // Set default exciter models
   bow_exciter.model = EXCITER_Q15_FLOW;
@@ -549,7 +554,8 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     resonator.brightness_q15 = total_brightness;
     resonator.position_q15 = position;
 
-    for (int i = 0; i < 3; i++) {
+    int32_t max_active_strings = (currentModel == MODEL_STRINGS_POLY || currentModel == MODEL_CHORDS) ? 4 : 1;
+    for (int i = 0; i < max_active_strings; i++) {
       strings[i].SetDispersion(geometry);
       strings[i].SetBrightness(total_brightness);
       strings[i].SetPosition(position);
@@ -598,19 +604,24 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     if (midi_q8 > 30720)
       midi_q8 = 30720; // MIDI 120 (C9)
 
+    // Polyphonic round-robin pitch capture on trigger rising edge
+    if (rising && currentModel == MODEL_STRINGS_POLY) {
+      poly_voice = (poly_voice + 1) % 4;
+      poly_pitch_q8[poly_voice] = midi_q8;
+    }
+
     // Convert MIDI pitch to normalized frequency via phase increment.
     // MidiToIncrementU32() internally adds +38<<8 to the index,
     // so we pass the raw MIDI Q8 value directly — no external offset.
     uint32_t inc = MidiToIncrementU32(midi_q8);
-    // MidiToIncrementU32 returns inc = (f / 48000) * 2^32.
+    // MidiToIncrementU32 returns inc = (f / 32000) * 2^32.
     // We need f_norm = f / sr_dsp, where sr_dsp = 24kHz, in Q15.
     //   f_norm_q15 = (f / 24000) * 32768
-    //              = (f / 48000) * 2 * 32768
-    //              = (f / 48000) * 65536
-    //              = (f / 48000) * 2^16
-    //              = inc / 2^32 * 2^16
-    //              = inc >> 16
-    int32_t freq_q15 = (int32_t)(inc >> 16);
+    //              = (f / 32000) * (32000 / 24000) * 32768
+    //              = (f / 32000) * (4 / 3) * 32768
+    //              = (inc / 2^32) * 43690.66
+    //              = (inc * 43691) >> 32
+    int32_t freq_q15 = (int32_t)(((uint64_t)inc * 43691) >> 32);
     if (freq_q15 > 16056)
       freq_q15 = 16056; // cap at 0.49 Nyquist
     if (freq_q15 < 1)
@@ -619,10 +630,12 @@ static void __not_in_flash_func(core1_dsp_loop)() {
 
     // Apply frequencies to strings, including chord offsets
     // chords_table offsets are in semitones. 1 semitone = 256 in Q8.
-    int32_t num_strings = (currentModel == MODEL_STRINGS) ? 3 : 1;
+    int32_t num_strings = (currentModel == MODEL_STRINGS_POLY || currentModel == MODEL_CHORDS) ? 4 : 1;
     for (int i = 0; i < num_strings; i++) {
       int32_t string_midi = midi_q8;
-      if (num_strings == 3) {
+      if (currentModel == MODEL_STRINGS_POLY) {
+        string_midi = poly_pitch_q8[i];
+      } else if (currentModel == MODEL_CHORDS) {
         // For discrete chord selection, use kMain (raw-ish) to avoid sluggish
         // jumps but keep geometry (smoothed) for continuous SetDispersion
         // below.
@@ -630,18 +643,18 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         if (chord_idx > 10)
           chord_idx = 10;
 
-        static const int16_t chord_offsets[11][3] = {
-            {0, -12 * 256, 12 * 256}, // Octaves
-            {0, -12 * 256, 3 * 256},  // Minor
-            {0, -12 * 256, 7 * 256},  // Minor 7
-            {0, 3 * 256, 14 * 256},   // Minor 9
-            {0, 3 * 256, 17 * 256},   // Minor 11
-            {0, -12 * 256, 19 * 256}, // Power chord stack
-            {0, 4 * 256, 17 * 256},   // Major 11
-            {0, 4 * 256, 14 * 256},   // Major 9
-            {0, 4 * 256, 7 * 256},    // Major
-            {0, 4 * 256, 11 * 256},   // Major 7
-            {0, 5 * 256, 7 * 256}     // Sus4
+        static const int16_t chord_offsets[11][4] = {
+            {0, -12 * 256, 12 * 256, 24 * 256}, // Octaves
+            {0, 7 * 256, 12 * 256, 19 * 256},   // Fifth (Power Chord stack)
+            {0, 5 * 256, 7 * 256, 12 * 256},    // Sus4 Triad
+            {0, 3 * 256, 7 * 256, 12 * 256},    // Minor Triad
+            {0, 4 * 256, 7 * 256, 12 * 256},    // Major Triad
+            {0, 3 * 256, 7 * 256, 10 * 256},   // Minor 7th
+            {0, 4 * 256, 7 * 256, 11 * 256},   // Major 7th
+            {0, 4 * 256, 7 * 256, 10 * 256},   // Dominant 7th
+            {0, 3 * 256, 7 * 256, 14 * 256},   // Minor 9th
+            {0, 4 * 256, 7 * 256, 14 * 256},   // Major 9th
+            {0, 3 * 256, 6 * 256, 9 * 256}      // Diminished Triad/7th
         };
         string_midi += chord_offsets[chord_idx][i];
       }
@@ -756,12 +769,24 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     int32_t strike_scaled = mul_q15(strike_lvl_adj, 29491); // * 0.9
     int32_t strike_mix = mul_q15(mul_q15(strike_out, accent), strike_scaled);
 
-    // Strike bleed: raw strike signal bleeds to output at high levels
-    int32_t strike_bleed = 0;
-    if (strike_level > 26214) { // > 0.8 in Q15
-      // Bleed gain reduced from 3.0 to 1.5
-      strike_bleed = mul_q15(strike_out, ((strike_level - 26214) * 3) >> 1);
+    // ── Position-Dependent Exciter Bleed ───────────────────────────
+    // In a real physical instrument, you hear direct transient impact and friction noise
+    // (strike hammer, bow rasp, blow air) mixed with the resonance, depending on pickup position.
+    // We scale this raw exciter bleed quadratically with the Position knob.
+    int32_t raw_exciter_bleed = 0;
+    
+    // 1. Strike bleed: raw hammer/plectrum transient
+    if (strike_level > 20000) { 
+      raw_exciter_bleed += mul_q15(strike_out, (strike_level - 20000) << 1);
     }
+    // 2. Bow bleed: direct bow scraping raspiness
+    raw_exciter_bleed += mul_q15(bow_mix, 8000);
+    // 3. Blow bleed: direct blowing breath noise
+    raw_exciter_bleed += mul_q15(b_mix, 6000);
+
+    // Scale raw bleed by position (quadratic curve: 0% at position=0, up to 100% at position=1.0)
+    int32_t bleed_gain = mul_q15(position, position);
+    int32_t active_bleed = mul_q15(raw_exciter_bleed, bleed_gain);
 
     // Sum all components that are always diffused (Blow, External)
     int32_t to_diffuse = b_mix + (ext_audio >> 2);
@@ -795,6 +820,16 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     // positive impulse)
     excitation = DCBlockQ15(excitation, dc_ex_x, dc_ex_y);
 
+    // Apply brightness-controlled low-pass filter on the excitation signal (Modal Resonator only).
+    // This replicates the original Elements excitation filter, giving the brightness knob
+    // a dramatic, gorgeous warming/damping effect on the transient strikes/clicks in Modal mode!
+    if (currentModel == MODEL_MODAL) {
+      int32_t ex_g = total_brightness >> 1; // Map 0..32767 → 0..16383 (Q14)
+      if (ex_g < 150) ex_g = 150;            // Keep a beautiful warm fundamental bottom end
+      excitation_filter.SetG(ex_g);
+      excitation = excitation_filter.ProcessLP(excitation);
+    }
+
     // ── Damping from Exciters ───────────────────────────────────────
     // Strike exciter provides damping feedback (palm mute on release)
     int32_t final_damping = total_damping_cv;
@@ -822,25 +857,25 @@ static void __not_in_flash_func(core1_dsp_loop)() {
       resonator.damping_q15 = final_damping;
       resonator.Process1(bow_strength_q15, excitation, res_center, res_sides);
 
-      final_center = res_center + strike_bleed;
+      final_center = res_center + active_bleed;
       final_sides = res_sides;
     } else {
       // String models
-      int32_t num_strings = (currentModel == MODEL_STRINGS) ? 3 : 1;
-      // Chord table matching Elements' first 3 strings voicing.
+      int32_t num_strings = (currentModel == MODEL_STRINGS_POLY || currentModel == MODEL_CHORDS) ? 4 : 1;
+      // Chord table matching Rings' lush 4-string voicing.
       // Values in Q8 semitones (1 semitone = 256)
-      static const int16_t chord_offsets[11][3] = {
-          {0, -12 * 256, 12 * 256}, // Octaves
-          {0, -12 * 256, 3 * 256},  // Minor
-          {0, -12 * 256, 7 * 256},  // Minor 7
-          {0, 3 * 256, 14 * 256},   // Minor 9
-          {0, 3 * 256, 17 * 256},   // Minor 11
-          {0, -12 * 256, 19 * 256}, // Power chord stack
-          {0, 4 * 256, 17 * 256},   // Major 11
-          {0, 4 * 256, 14 * 256},   // Major 9
-          {0, 4 * 256, 7 * 256},    // Major
-          {0, 4 * 256, 11 * 256},   // Major 7
-          {0, 5 * 256, 7 * 256}     // Sus4
+      static const int16_t chord_offsets[11][4] = {
+          {0, -12 * 256, 12 * 256, 24 * 256}, // Octaves
+          {0, 7 * 256, 12 * 256, 19 * 256},   // Fifth (Power Chord stack)
+          {0, 5 * 256, 7 * 256, 12 * 256},    // Sus4 Triad
+          {0, 3 * 256, 7 * 256, 12 * 256},    // Minor Triad
+          {0, 4 * 256, 7 * 256, 12 * 256},    // Major Triad
+          {0, 3 * 256, 7 * 256, 10 * 256},   // Minor 7th
+          {0, 4 * 256, 7 * 256, 11 * 256},   // Major 7th
+          {0, 4 * 256, 7 * 256, 10 * 256},   // Dominant 7th
+          {0, 3 * 256, 7 * 256, 14 * 256},   // Minor 9th
+          {0, 4 * 256, 7 * 256, 14 * 256},   // Major 9th
+          {0, 3 * 256, 6 * 256, 9 * 256}      // Diminished Triad/7th
       };
 
       int32_t s_center = 0;
@@ -849,7 +884,9 @@ static void __not_in_flash_func(core1_dsp_loop)() {
 
       for (int i = 0; i < num_strings; i++) {
         int32_t string_midi = midi_q8;
-        if (num_strings == 3) {
+        if (currentModel == MODEL_STRINGS_POLY) {
+          string_midi = poly_pitch_q8[i];
+        } else if (currentModel == MODEL_CHORDS) {
           int32_t chord_idx = (geometry * 11) >> 15;
           if (chord_idx > 10)
             chord_idx = 10;
@@ -859,8 +896,8 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         uint32_t s_inc = MidiToIncrementU32(string_midi);
         strings[i].SetFrequency(s_inc);
 
-        // Sympathetic strings ring longer and are darker
-        if (i > 0 && num_strings == 3) {
+        // Sympathetic strings ring longer and are darker in chords mode
+        if (i > 0 && currentModel == MODEL_CHORDS) {
           // Longer decay (higher damping value)
           int32_t sym_damping = 32767 - ((32767 - final_damping) >> 1);
           strings[i].SetDamping(sym_damping);
@@ -876,26 +913,42 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         int32_t c = 0, s = 0;
         int32_t current_in = 0;
 
-        if (i == 0) {
-          // String 0 is the master
-          current_in = (num_strings == 3) ? (excitation >> 1) : excitation;
+        if (currentModel == MODEL_STRINGS_POLY) {
+          // Route excitation ONLY to the active polyphonic voice string
+          current_in = (i == poly_voice) ? excitation : 0;
+        } else if (currentModel == MODEL_CHORDS) {
+          if (i == 0) {
+            // String 0 is excited directly (0.5x gain to prevent clipping)
+            current_in = mul_q15(excitation, 16384);
+          } else {
+            // Strings 1, 2 & 3 are excited directly AND receive Master String 0's sympathetic coupling!
+            current_in = mul_q15(excitation, 16384) + (sympathetic_bus >> 3);
+          }
         } else {
-          // Strings 1 and 2 are sympathetic, receiving master's energy
-          // 0.25 scaling factor
-          current_in = sympathetic_bus >> 2;
+          // Monophonic String
+          current_in = excitation;
         }
 
         strings[i].Process(current_in, c, s);
 
-        if (i == 0) {
+        if (currentModel == MODEL_CHORDS && i == 0) {
           // Use output difference for sympathetic excitation
           sympathetic_bus = c - s;
         }
 
+        // Fixed spatial panning across Mid-Side (scaled by Space/Spread knob on Core 0)
+        int32_t pan = 0;
+        if (num_strings == 4) {
+          if (i == 0) pan = -32767;
+          else if (i == 1) pan = -10922; // -1/3 of Q15
+          else if (i == 2) pan = 10922;  // 1/3 of Q15
+          else if (i == 3) pan = 32767;
+        }
+
         s_center += c;
-        s_sides += s;
+        s_sides += mul_q15(c, pan) + (s >> 1);
       }
-      final_center = s_center + strike_bleed;
+      final_center = s_center + active_bleed;
       final_sides = s_sides;
     }
 
@@ -1090,7 +1143,7 @@ static const Preset factory_presets[16] = {
      {0}},
     {// Slot 3: Shimmering Harp (Plucked chord string ensemble)
      PRESET_MAGIC,
-     (uint32_t)MODEL_STRINGS,
+     (uint32_t)MODEL_CHORDS,
      0xAAAA,
      {48, 51, 53, 55, 58, 60, 63, 65, 67, 70, 72, 75, 77, 79, 82, 84},
      14000, // BPM
@@ -1141,7 +1194,7 @@ static const Preset factory_presets[16] = {
      {0}},
     {// Slot 6: Bowed Violin (Rich woodbody swelling strings)
      PRESET_MAGIC,
-     (uint32_t)MODEL_STRINGS,
+     (uint32_t)MODEL_CHORDS,
      0xAAAA,
      {48, 51, 53, 55, 58, 60, 63, 65, 67, 70, 72, 75, 77, 79, 82, 84},
      10000, // BPM
@@ -1260,7 +1313,7 @@ static const Preset factory_presets[16] = {
      {0}},
     {// Slot 13: Space Drone (Multi-strings bowed continuously)
      PRESET_MAGIC,
-     (uint32_t)MODEL_STRINGS,
+     (uint32_t)MODEL_CHORDS,
      0xAAAA,
      {48, 51, 53, 55, 58, 60, 63, 65, 67, 70, 72, 75, 77, 79, 82, 84},
      7000,  // BPM
@@ -2182,12 +2235,15 @@ public:
         outR = SoftLimitQ15(outR);
 
         // ── Stereo Delay / Reverb ───────────────────────────────
-        // Space parameter (Page 4 Y) also controls reverb mix/decay.
+        // Reverb parameter (Page 4 Y) controls both the mix level and the room size/decay.
+        // Scaling the decay from 2000 (tight room) to 32440 (infinite cathedral) gives
+        // the user extremely responsive control over the space size.
         int32_t reverb_amt = params[4].pY;
-        int32_t rev_decay = 9830 + mul_q15(reverb_amt, 22610);
+        int32_t rev_decay = 2000 + mul_q15(reverb_amt, 30440);
         int32_t rev_damp = 16384;
+        int32_t size_ratio = 6554 + mul_q15(reverb_amt, 26214); // 0.2 to 1.0 size
 
-        reverb.Process(outL, outR, reverb_amt, rev_decay, rev_damp);
+        reverb.Process(outL, outR, reverb_amt, rev_decay, rev_damp, size_ratio);
 
         // ── Soft Clip ───────────────────────────────────────────
         outL = SoftClipQ15(outL);

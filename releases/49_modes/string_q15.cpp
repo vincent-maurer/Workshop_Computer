@@ -26,7 +26,10 @@ void __attribute__((section(".time_critical.string_process"))) StringQ15::Proces
     if (frequency_inc_ < 100) {
         delay_q15 = (STRING_DELAY_SIZE - 4) << 15;
     } else {
-        delay_q15 = (int32_t)(((int64_t)1 << 46) / (int64_t)frequency_inc_);
+        // frequency_inc_ is based on 32kHz: f_inc = f / 32000 * 2^32
+        // delay_samples (24kHz) = 24000 / f = 24000 * 2^32 / (frequency_inc_ * 32000) = 3 * 2^30 / frequency_inc_
+        // delay_q15 = delay_samples * 32768 = 3 * 2^45 / frequency_inc_
+        delay_q15 = (int32_t)(((int64_t)3 << 45) / (int64_t)frequency_inc_);
     }
     
     // Clamp delay
@@ -38,15 +41,20 @@ void __attribute__((section(".time_critical.string_process"))) StringQ15::Proces
     }
     
     // ── Rock-Solid 1-Pole Damping Filters ──
-    int32_t lp_coef = (int32_t)(frequency_inc_ >> 13) + brightness_q15_; // Adjusted scaling
-    if (lp_coef > 30000) lp_coef = 30000;
+    // Scale filter cutoff proportionally to brightness knob with fundamental frequency tracking.
+    // This makes the brightness knob extremely expressive and effective across all octaves.
+    int32_t lp_coef = mul_q15(brightness_q15_, 28000) + (int32_t)(frequency_inc_ >> 15);
+    if (lp_coef > 29500) lp_coef = 29500; // Natural bridge high-frequency absorption
     if (lp_coef < 100) lp_coef = 100;
     
     int32_t hp_coef = 600 - mul_q15(damping_q15_, 500); // 600 to 100
     
-    // Feedback amount: 28700 (short) to 32700 (long)
-    // Matches Modal behavior: Max Knob = Max Decay
-    int32_t feedback = 28700 + mul_q15(damping_q15_, 4000); 
+    // Exponentially scaled feedback for smooth, musical decay progression across the knob's travel.
+    // Maps linear damping knob to a 4th-power inverse curve (0% = dry pluck, 50% = 1.5s, 75% = 5s, 100% = 12s).
+    int32_t inv_d = 32767 - damping_q15_;
+    int32_t inv_d_sq = mul_q15(inv_d, inv_d);
+    int32_t inv_d_quad = mul_q15(inv_d_sq, inv_d_sq);
+    int32_t feedback = 32758 - mul_q15(3932, inv_d_quad); // Increased max feedback to 32758 for gorgeous acoustic ring
     
     // Comb delay (pickup position)
     int32_t clamped_pos = 16384 - mul_q15(32112, (position_q15_ > 16384 ? position_q15_ - 16384 : 16384 - position_q15_));
@@ -63,9 +71,20 @@ void __attribute__((section(".time_critical.string_process"))) StringQ15::Proces
         filter_delay_q15 = 80 << 15; // Cap at 80 samples
     }
     
+    // Smoothly cap the delay compensation to at most half of the total delay line size
+    // to prevent pitch-transposition squeaks on dark notes.
+    if (filter_delay_q15 > (delay_q15 >> 1)) {
+        filter_delay_q15 = delay_q15 >> 1;
+    }
+    
     // Read from string, compensating for filter delay and the implicit 1-sample loop delay.
     // Implicit loop delay is 32768 (1 sample).
     int32_t read_delay = delay_q15 - 32768 - filter_delay_q15; 
+    
+    // Protect ReadHermite from negative delays or excessive underflow
+    if (read_delay < (4 << 15)) {
+        read_delay = 4 << 15;
+    } 
     
     // Read from string
     int32_t s = string_.ReadHermite(read_delay);

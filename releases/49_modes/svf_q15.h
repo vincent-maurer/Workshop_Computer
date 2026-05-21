@@ -255,7 +255,7 @@ struct SvfQ15 {
 // Simple first-order low-pass/high-pass for parameter smoothing and
 // damping filters.
 
-struct OnePoleQ15 {
+struct OnePoleFilterQ15 {
     int32_t g;      // Frequency coefficient (Q14)
     int32_t gi;     // 1/(1+g) normalization (Q15)
     int32_t state;  // Filter state (Q15)

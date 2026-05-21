@@ -7,11 +7,13 @@ class PlateReverbQ15 {
     struct AP {
         int16_t *bufIn, *bufOut;
         uint16_t size, ptr, len;
+        uint16_t base_len;
         int16_t g;
         void init(int16_t *b, uint16_t s, uint16_t l, int16_t gain) {
             bufIn = b;
             bufOut = b + s;
             size = s;
+            base_len = l;
             len = l;
             g = gain;
             ptr = 0;
@@ -33,9 +35,11 @@ class PlateReverbQ15 {
     struct Delay {
         int16_t *buf;
         uint16_t size, ptr, len;
+        uint16_t base_len;
         void init(int16_t *b, uint16_t s, uint16_t l) {
             buf = b;
             size = s;
+            base_len = l;
             len = l;
             ptr = 0;
         }
@@ -56,6 +60,7 @@ class PlateReverbQ15 {
     Delay modL, d1L, d2L, modR, d1R, d2R;
     int32_t lpL, lpR, lpIn;
     uint32_t lfo;
+    int32_t current_ratio;
 
 public:
     void Init() {
@@ -64,6 +69,7 @@ public:
         lpR = 0;
         lpIn = 0;
         lfo = 0;
+        current_ratio = 32768;
         
         int16_t *p = mem;
         
@@ -92,9 +98,35 @@ public:
         d2R.init(p, 4126, 4125);          p += 4126;
     }
     
-    void __not_in_flash_func(Process)(int32_t &outL, int32_t &outR, int32_t mix, int32_t decay, int32_t damp) {
+    void __not_in_flash_func(Process)(int32_t &outL, int32_t &outR, int32_t mix, int32_t decay, int32_t damp, int32_t size_ratio) {
         if (mix < 10) return;
         
+        // Smoothly interpolate size ratio to prevent clicks and generate lush pitch-shifter sweeping effects
+        current_ratio += (size_ratio - current_ratio) >> 8;
+        
+        for (int i = 0; i < 4; i++) {
+            apIn[i].len = (apIn[i].base_len * current_ratio) >> 15;
+            if (apIn[i].len < 2) apIn[i].len = 2;
+        }
+        apTankL.len = (apTankL.base_len * current_ratio) >> 15;
+        if (apTankL.len < 2) apTankL.len = 2;
+        apTankR.len = (apTankR.base_len * current_ratio) >> 15;
+        if (apTankR.len < 2) apTankR.len = 2;
+        
+        modL.len = (modL.base_len * current_ratio) >> 15;
+        if (modL.len < 2) modL.len = 2;
+        d1L.len = (d1L.base_len * current_ratio) >> 15;
+        if (d1L.len < 2) d1L.len = 2;
+        d2L.len = (d2L.base_len * current_ratio) >> 15;
+        if (d2L.len < 2) d2L.len = 2;
+        
+        modR.len = (modR.base_len * current_ratio) >> 15;
+        if (modR.len < 2) modR.len = 2;
+        d1R.len = (d1R.base_len * current_ratio) >> 15;
+        if (d1R.len < 2) d1R.len = 2;
+        d2R.len = (d2R.base_len * current_ratio) >> 15;
+        if (d2R.len < 2) d2R.len = 2;
+
         int32_t mono_32 = (outL + outR) >> 1;
         if (mono_32 > 32767) mono_32 = 32767;
         else if (mono_32 < -32768) mono_32 = -32768;
@@ -145,7 +177,7 @@ public:
         sR = apTankR.process(sR);
         d2R.write(sR);
         
-        outL = (outL * (32767 - mix) + (int32_t)sL * mix) >> 15;
-        outR = (outR * (32767 - mix) + (int32_t)sR * mix) >> 15;
+        outL = outL + (((int32_t)sL * mix) >> 13);
+        outR = outR + (((int32_t)sR * mix) >> 13);
     }
 };
