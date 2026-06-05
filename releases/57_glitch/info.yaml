@@ -1,0 +1,6 @@
+Name: Glitch
+Description: Clock-synced beat-repeater with ratcheting, reversal and audio degradation
+Language: C++ (Pico SDK)
+Creator: Andy Jenkinson (uglifruit)
+Version: 1.4.0
+Status: Release
