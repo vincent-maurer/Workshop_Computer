@@ -351,8 +351,8 @@ void parse_host_midi_byte(uint8_t b) {
 // MIDI CC mappings for each page [Page][Knob]
 static const uint8_t PageCCs[6][3] = {
     {34, 35, 36}, // Page 0: Strike
-    {37, 38, 39}, // Page 1: Blow
-    {40, 41, 42}, // Page 2: Bow
+    {40, 41, 42}, // Page 1: Bow & Envelope
+    {37, 38, 39}, // Page 2: Blow
     {43, 44, 45}, // Page 3: Resonator 1
     {46, 47, 48}, // Page 4: Resonator 2 (Pos, Space, Reverb)
     {49, 50, 51}  // Page 5: Perf (Coarse, Fine, Strength)
@@ -377,6 +377,9 @@ static TubeQ15 tube;
 static PlateReverbQ15 reverb; // Moved to Core 0 context logically
 static OnePoleFilterQ15 excitation_filter;
 
+static int32_t strum_delay_buffer[512];
+static uint16_t strum_delay_ptr = 0;
+
 static int32_t dc_ex_x = 0;
 static int32_t dc_ex_y = 0;
 
@@ -400,6 +403,9 @@ static void __not_in_flash_func(core1_dsp_loop)() {
   diffuser.Init();
   tube.Init();
   excitation_filter.Init();
+
+  memset(strum_delay_buffer, 0, sizeof(strum_delay_buffer));
+  strum_delay_ptr = 0;
 
   // Set default exciter models
   bow_exciter.model = EXCITER_Q15_FLOW;
@@ -447,15 +453,15 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     int32_t strike_timbre = params[0].pX;
     int32_t strike_meta = params[0].pY;
 
-    // Page 1: Blow
-    int32_t blow_level = params[1].pMain;
-    int32_t blow_timbre = params[1].pX;
-    int32_t blow_meta = params[1].pY;
+    // Page 1: Bow & Envelope
+    int32_t bow_level = params[1].pMain;
+    int32_t bow_timbre = params[1].pX;
+    int32_t env_shape = params[1].pY;
 
-    // Page 2: Bow & Envelope
-    int32_t bow_level = params[2].pMain;
-    int32_t bow_timbre = params[2].pX;
-    int32_t env_shape = params[2].pY;
+    // Page 2: Blow
+    int32_t blow_level = params[2].pMain;
+    int32_t blow_timbre = params[2].pX;
+    int32_t blow_meta = params[2].pY;
 
     // Page 3: Resonator Core
     int32_t geometry = params[3].pMain;
@@ -548,17 +554,46 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     if (total_damping_cv > 32767)
       total_damping_cv = 32767;
 
+    // Modulate position by Audio 2 (cv_damping) up to 50% depth
+    int32_t total_position = position + (cv_damping >> 1);
+    if (total_position < 0)
+      total_position = 0;
+    if (total_position > 32767)
+      total_position = 32767;
+
+    // Modulate exciter timbres by CV 2 (cv_bright) up to 50% depth
+    int32_t cv2_timbre_mod = cv_bright >> 1;
+    
+    int32_t total_strike_timbre = strike_timbre + cv2_timbre_mod;
+    if (total_strike_timbre < 0) total_strike_timbre = 0;
+    if (total_strike_timbre > 32767) total_strike_timbre = 32767;
+
+    int32_t total_blow_timbre = blow_timbre + cv2_timbre_mod;
+    if (total_blow_timbre < 0) total_blow_timbre = 0;
+    if (total_blow_timbre > 32767) total_blow_timbre = 32767;
+
+    int32_t total_bow_timbre = bow_timbre + cv2_timbre_mod;
+    if (total_bow_timbre < 0) total_bow_timbre = 0;
+    if (total_bow_timbre > 32767) total_bow_timbre = 32767;
+
+    // Modulate geometry by Audio 2 (cv_damping) up to 50% depth
+    int32_t total_geometry = geometry + (cv_damping >> 1);
+    if (total_geometry < 0)
+      total_geometry = 0;
+    if (total_geometry > 32767)
+      total_geometry = 32767;
+
     // ── Configure Resonator / String ────────────────────────────────
 
-    resonator.geometry_q15 = geometry;
+    resonator.geometry_q15 = total_geometry;
     resonator.brightness_q15 = total_brightness;
-    resonator.position_q15 = position;
+    resonator.position_q15 = total_position;
 
     int32_t max_active_strings = (currentModel == MODEL_STRINGS_POLY || currentModel == MODEL_CHORDS) ? 4 : 1;
     for (int i = 0; i < max_active_strings; i++) {
-      strings[i].SetDispersion(geometry);
+      strings[i].SetDispersion(total_geometry);
       strings[i].SetBrightness(total_brightness);
-      strings[i].SetPosition(position);
+      strings[i].SetPosition(total_position);
     }
 
     // Model toggle: changes the number of active modes for Modal
@@ -639,22 +674,22 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         // For discrete chord selection, use kMain (raw-ish) to avoid sluggish
         // jumps but keep geometry (smoothed) for continuous SetDispersion
         // below.
-        int32_t chord_idx = (geometry * 11) >> 15;
+        int32_t chord_idx = (total_geometry * 11) >> 15;
         if (chord_idx > 10)
           chord_idx = 10;
 
         static const int16_t chord_offsets[11][4] = {
-            {0, -12 * 256, 12 * 256, 24 * 256}, // Octaves
-            {0, 7 * 256, 12 * 256, 19 * 256},   // Fifth (Power Chord stack)
-            {0, 5 * 256, 7 * 256, 12 * 256},    // Sus4 Triad
-            {0, 3 * 256, 7 * 256, 12 * 256},    // Minor Triad
-            {0, 4 * 256, 7 * 256, 12 * 256},    // Major Triad
-            {0, 3 * 256, 7 * 256, 10 * 256},   // Minor 7th
-            {0, 4 * 256, 7 * 256, 11 * 256},   // Major 7th
-            {0, 4 * 256, 7 * 256, 10 * 256},   // Dominant 7th
-            {0, 3 * 256, 7 * 256, 14 * 256},   // Minor 9th
-            {0, 4 * 256, 7 * 256, 14 * 256},   // Major 9th
-            {0, 3 * 256, 6 * 256, 9 * 256}      // Diminished Triad/7th
+            {-12 * 256, 0, 3, 12 * 256},             // Octaves
+            {-12 * 256, 3 * 256, 7 * 256, 10 * 256}, // Minor 7th
+            {-12 * 256, 3 * 256, 7 * 256, 12 * 256}, // Minor
+            {-12 * 256, 3 * 256, 7 * 256, 14 * 256}, // Minor 9th
+            {-12 * 256, 3 * 256, 7 * 256, 17 * 256}, // Minor 11th
+            {-12 * 256, 7 * 256, 12 * 256, 19 * 256}, // Fifth (Power Chord stack)
+            {-12 * 256, 4 * 256, 7 * 256, 17 * 256}, // Major 11th
+            {-12 * 256, 4 * 256, 7 * 256, 14 * 256}, // Major 9th
+            {-12 * 256, 4 * 256, 7 * 256, 12 * 256}, // Major
+            {-12 * 256, 4 * 256, 7 * 256, 11 * 256}, // Major 7th
+            {-12 * 256, 5 * 256, 7 * 256, 12 * 256}  // Sus4
         };
         string_midi += chord_offsets[chord_idx][i];
       }
@@ -674,14 +709,16 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     // 0.6
     int32_t brightness_factor = 13107 + mul_q15(brightness, 19661);
 
-    // Bow: Flow model, timbre controlled by bow_timbre * brightness
-    bow_exciter.timbre = mul_q15(bow_timbre, brightness_factor);
+    // Bow: Flow model, timbre controlled by total_bow_timbre * brightness
+    bow_exciter.timbre = mul_q15(total_bow_timbre, brightness_factor);
     bow_exciter.model = EXCITER_Q15_FLOW;
-    bow_exciter.parameter = 22938; // ~0.7 turbulence
+    // Turbulence driven by bow timbre: soft timbre = smooth bowing, bright timbre = scratchy
+    // Range 0.2..1.0 maps from silky-smooth to coarse raspy scrape (matches Elements)
+    bow_exciter.parameter = 6554 + mul_q15(total_bow_timbre, 26214);
 
     // Blow: Granular sample player (matching original)
     blow_exciter.parameter = blow_meta;
-    blow_exciter.timbre = blow_timbre;
+    blow_exciter.timbre = total_blow_timbre;
     blow_exciter.signature =
         blow_meta; // Tie signature to meta for texture variation
     blow_exciter.model = EXCITER_Q15_GRANULAR;
@@ -701,7 +738,7 @@ static void __not_in_flash_func(core1_dsp_loop)() {
       adjusted_meta = 32767;
     strike_exciter.SetMeta(adjusted_meta, EXCITER_Q15_SAMPLE,
                            EXCITER_Q15_PARTICLES);
-    strike_exciter.timbre = strike_timbre;
+    strike_exciter.timbre = total_strike_timbre;
     strike_exciter.signature = strike_meta; // Tie signature to meta
 
     // ── Process Exciters ────────────────────────────────────────────
@@ -731,7 +768,7 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     //         bleed: level > 1.0 → raw strike bleeds to output
     // bow: bow * bow_level * envelope * accent * 0.125
 
-    int32_t e = mul_q15(smooth_env_value, accent);
+    int32_t e = mul_q15_q14(smooth_env_value, accent);
 
     // Bow contribution: bow * bow_level * e * 1.8 (reduced from 2.5)
     int32_t bow_mix = mul_q15(mul_q15(bow_out, bow_level), e);
@@ -757,7 +794,7 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     // Gain is reduced (tube_amt >> 3) to keep the Blow section from
     // overpowering
     int32_t tube_out =
-        tube.Process(freq_q15, smooth_env_value, damping, blow_timbre, b_noise);
+        tube.Process(freq_q15, smooth_env_value, damping, total_blow_timbre, b_noise);
     int32_t b_mix = b_noise + mul_q15(tube_out, tube_amt >> 3);
 
     // Strike contribution: strike * accent * strike_level_scaled + external
@@ -767,7 +804,7 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     if (strike_lvl_adj > 32767)
       strike_lvl_adj = 32767;
     int32_t strike_scaled = mul_q15(strike_lvl_adj, 29491); // * 0.9
-    int32_t strike_mix = mul_q15(mul_q15(strike_out, accent), strike_scaled);
+    int32_t strike_mix = mul_q15(mul_q15_q14(strike_out, accent), strike_scaled);
 
     // ── Position-Dependent Exciter Bleed ───────────────────────────
     // In a real physical instrument, you hear direct transient impact and friction noise
@@ -785,17 +822,18 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     raw_exciter_bleed += mul_q15(b_mix, 6000);
 
     // Scale raw bleed by position (quadratic curve: 0% at position=0, up to 100% at position=1.0)
-    int32_t bleed_gain = mul_q15(position, position);
+    int32_t bleed_gain = mul_q15(total_position, total_position);
     int32_t active_bleed = mul_q15(raw_exciter_bleed, bleed_gain);
 
     // Sum all components that are always diffused (Blow, External)
-    int32_t to_diffuse = b_mix + (ext_audio >> 2);
+    // Scale external exciter by blow_level to allow volume control
+    int32_t to_diffuse = b_mix + mul_q15(ext_audio, blow_level);
 
     // Split strike component: diffusion depends on Strike Timbre
     // Low Timbre = soft mallet (diffused), High Timbre = hard stick (direct)
     // fade = 0 (low) -> strike_to_diffuse = strike_mix
     // fade = 32767 (high) -> strike_to_diffuse = 0
-    int32_t strike_to_diffuse = strike_mix - mul_q15(strike_mix, strike_timbre);
+    int32_t strike_to_diffuse = strike_mix - mul_q15(strike_mix, total_strike_timbre);
     int32_t strike_direct = strike_mix - strike_to_diffuse;
 
     to_diffuse += strike_to_diffuse;
@@ -820,20 +858,25 @@ static void __not_in_flash_func(core1_dsp_loop)() {
     // positive impulse)
     excitation = DCBlockQ15(excitation, dc_ex_x, dc_ex_y);
 
-    // Apply brightness-controlled low-pass filter on the excitation signal (Modal Resonator only).
-    // This replicates the original Elements excitation filter, giving the brightness knob
-    // a dramatic, gorgeous warming/damping effect on the transient strikes/clicks in Modal mode!
-    if (currentModel == MODEL_MODAL) {
+    // Apply brightness-controlled low-pass filter on the excitation signal (all models).
+    // This replicates the original Elements excitation filter: brightness knob simultaneously
+    // controls both the resonator Q loss AND the colour of the excitation going in.
+    // Low brightness = warm/wooden attack; high brightness = bright/metallic click.
+    {
       int32_t ex_g = total_brightness >> 1; // Map 0..32767 → 0..16383 (Q14)
-      if (ex_g < 150) ex_g = 150;            // Keep a beautiful warm fundamental bottom end
+      if (ex_g < 150) ex_g = 150;           // Keep a warm fundamental bottom end
       excitation_filter.SetG(ex_g);
       excitation = excitation_filter.ProcessLP(excitation);
     }
 
     // ── Damping from Exciters ───────────────────────────────────────
-    // Strike exciter provides damping feedback (palm mute on release)
+    // Strike exciter provides damping feedback (palm mute effect):
+    // Soft mallets (low adjusted_meta) = high inherent damping (short ring).
+    // Hard sticks (high adjusted_meta) = low inherent damping (long sustain).
+    // This gives the Strike meta knob a physical feel: mallets naturally mute, sticks ring.
     int32_t final_damping = total_damping_cv;
-    final_damping -= mul_q15(strike_exciter.damping, strike_lvl_adj) >> 3;
+    int32_t derived_strike_damping = 32767 - adjusted_meta; // soft=high damp, hard=low damp
+    final_damping -= mul_q15(derived_strike_damping, strike_lvl_adj) >> 3;
     // Bow damping: when bow is not pressed, it damps
     int32_t bow_strength_inv = 32767 - mul_q15(bow_level, smooth_env_value);
     final_damping -= mul_q15(bow_strength_inv, bow_level) >> 4;
@@ -861,21 +904,25 @@ static void __not_in_flash_func(core1_dsp_loop)() {
       final_sides = res_sides;
     } else {
       // String models
+      
+      // Write current excitation to the strum delay circular buffer
+      strum_delay_buffer[strum_delay_ptr] = excitation;
+
       int32_t num_strings = (currentModel == MODEL_STRINGS_POLY || currentModel == MODEL_CHORDS) ? 4 : 1;
-      // Chord table matching Rings' lush 4-string voicing.
+      // Chord table matching Rings' original 4-string voicing.
       // Values in Q8 semitones (1 semitone = 256)
       static const int16_t chord_offsets[11][4] = {
-          {0, -12 * 256, 12 * 256, 24 * 256}, // Octaves
-          {0, 7 * 256, 12 * 256, 19 * 256},   // Fifth (Power Chord stack)
-          {0, 5 * 256, 7 * 256, 12 * 256},    // Sus4 Triad
-          {0, 3 * 256, 7 * 256, 12 * 256},    // Minor Triad
-          {0, 4 * 256, 7 * 256, 12 * 256},    // Major Triad
-          {0, 3 * 256, 7 * 256, 10 * 256},   // Minor 7th
-          {0, 4 * 256, 7 * 256, 11 * 256},   // Major 7th
-          {0, 4 * 256, 7 * 256, 10 * 256},   // Dominant 7th
-          {0, 3 * 256, 7 * 256, 14 * 256},   // Minor 9th
-          {0, 4 * 256, 7 * 256, 14 * 256},   // Major 9th
-          {0, 3 * 256, 6 * 256, 9 * 256}      // Diminished Triad/7th
+          {-12 * 256, 0, 3, 12 * 256},             // Octaves
+          {-12 * 256, 3 * 256, 7 * 256, 10 * 256}, // Minor 7th
+          {-12 * 256, 3 * 256, 7 * 256, 12 * 256}, // Minor
+          {-12 * 256, 3 * 256, 7 * 256, 14 * 256}, // Minor 9th
+          {-12 * 256, 3 * 256, 7 * 256, 17 * 256}, // Minor 11th
+          {-12 * 256, 7 * 256, 12 * 256, 19 * 256}, // Fifth (Power Chord stack)
+          {-12 * 256, 4 * 256, 7 * 256, 17 * 256}, // Major 11th
+          {-12 * 256, 4 * 256, 7 * 256, 14 * 256}, // Major 9th
+          {-12 * 256, 4 * 256, 7 * 256, 12 * 256}, // Major
+          {-12 * 256, 4 * 256, 7 * 256, 11 * 256}, // Major 7th
+          {-12 * 256, 5 * 256, 7 * 256, 12 * 256}  // Sus4
       };
 
       int32_t s_center = 0;
@@ -887,28 +934,40 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         if (currentModel == MODEL_STRINGS_POLY) {
           string_midi = poly_pitch_q8[i];
         } else if (currentModel == MODEL_CHORDS) {
-          int32_t chord_idx = (geometry * 11) >> 15;
+          int32_t chord_idx = (total_geometry * 11) >> 15;
           if (chord_idx > 10)
             chord_idx = 10;
           string_midi += chord_offsets[chord_idx][i];
         }
 
+        if (string_midi < 0)
+          string_midi = 0;
+        if (string_midi > 30720)
+          string_midi = 30720;
+
         uint32_t s_inc = MidiToIncrementU32(string_midi);
         strings[i].SetFrequency(s_inc);
 
-        // Sympathetic strings ring longer and are darker in chords mode
+        // Sympathetic strings ring longer and are brighter in chords mode
         if (i > 0 && currentModel == MODEL_CHORDS) {
-          // Longer decay (higher damping value)
-          int32_t sym_damping = 32767 - ((32767 - final_damping) >> 1);
+          // Scale progressively and make it proportional to final_damping so turning damping knob down works!
+          int32_t string_index_q15 = (i == 1) ? 10922 : ((i == 2) ? 21845 : 32767);
+          int32_t sym_damping = final_damping + mul_q15(string_index_q15, mul_q15(32767 - final_damping, 22938));
           strings[i].SetDamping(sym_damping);
-          strings[i].SetBrightness(mul_q15(total_brightness, 20000));
+
+          // Rings' boosted brightness for sympathetic strings:
+          int32_t sym_brightness = total_brightness;
+          sym_brightness = 2 * sym_brightness - mul_q15(sym_brightness, sym_brightness);
+          sym_brightness = 2 * sym_brightness - mul_q15(sym_brightness, sym_brightness);
+          if (sym_brightness > 32767) sym_brightness = 32767;
+          strings[i].SetBrightness(sym_brightness);
         } else {
           strings[i].SetDamping(final_damping);
           strings[i].SetBrightness(total_brightness);
         }
 
-        strings[i].SetPosition(position);
-        strings[i].SetDispersion(geometry);
+        strings[i].SetPosition(total_position);
+        strings[i].SetDispersion(total_geometry);
 
         int32_t c = 0, s = 0;
         int32_t current_in = 0;
@@ -917,12 +976,14 @@ static void __not_in_flash_func(core1_dsp_loop)() {
           // Route excitation ONLY to the active polyphonic voice string
           current_in = (i == poly_voice) ? excitation : 0;
         } else if (currentModel == MODEL_CHORDS) {
+          // Excite directly with 100-sample (4.1ms) stagger delay per string
+          int32_t delayed_exc = strum_delay_buffer[(strum_delay_ptr + 512 - i * 100) & 511];
           if (i == 0) {
             // String 0 is excited directly (0.5x gain to prevent clipping)
-            current_in = mul_q15(excitation, 16384);
+            current_in = mul_q15(delayed_exc, 16384);
           } else {
-            // Strings 1, 2 & 3 are excited directly AND receive Master String 0's sympathetic coupling!
-            current_in = mul_q15(excitation, 16384) + (sympathetic_bus >> 3);
+            // Strings 1, 2 & 3 are excited directly with delay AND receive sympathetic coupling!
+            current_in = mul_q15(delayed_exc, 16384) + (sympathetic_bus >> 4);
           }
         } else {
           // Monophonic String
@@ -948,6 +1009,10 @@ static void __not_in_flash_func(core1_dsp_loop)() {
         s_center += c;
         s_sides += mul_q15(c, pan) + (s >> 1);
       }
+
+      // Advance strum delay pointer
+      strum_delay_ptr = (strum_delay_ptr + 1) & 511;
+
       final_center = s_center + active_bleed;
       final_sides = s_sides;
     }
@@ -1335,7 +1400,7 @@ static const Preset factory_presets[16] = {
      {48, 51, 53, 55, 58, 60, 63, 65, 67, 70, 72, 75, 77, 79, 82, 84},
      14000, // BPM
      0,     // Arp Mode: Up
-     16000, // Y knob: Loop=8
+     16000, // Y knob
      1,     // Scale: Pentatonic Major
      0,     // Root: C
      {{32767, 28000, 20000}, // Page 0: Strike
@@ -1411,11 +1476,23 @@ public:
 
   // ── CV Smoothing ────────────────────────────────────────────────────
   int32_t cv1_acc = 0; // Smoothed CV1 accumulator
+  int32_t cv1_fast_acc = 0; // Fast CV1 accumulator for S&H settling
+  int sh_settling_timer = 0; // Settling counter (96 samples = 2ms at 48kHz)
+  bool sh_pending = false;   // Flag indicating a CV settling cycle is active
+  bool delayed_gate = false; // Delayed gate state to align with settled CV
+  int32_t last_auto_pitch_q8 = -99999; // Rings-style: last pitch for auto-strum detection
   int32_t cv2_acc = 0; // Smoothed CV2 accumulator
 
   // ── DC Blockers ─────────────────────────────────────────────────────
   int32_t dc_bxL = 0, dc_byL = 0, dc_bxR = 0, dc_byR = 0; // Input
   int32_t dc_oxL = 0, dc_oyL = 0, dc_oxR = 0, dc_oyR = 0; // Output
+
+  // ── Reverb Parameter Smoothing ───────────────────────────────────
+  // Slow IIR smoothing prevents zipper noise when the reverb wet/dry or
+  // room size is changed. >> 7 gives ~128-sample (5ms) attack at 24kHz.
+  int32_t smooth_reverb_amt = 0;
+  int32_t smooth_rev_decay  = 2000;
+  int32_t smooth_size_ratio = 6554;
 
   // ── Page Display Timer ──────────────────────────────────────────────
   uint32_t pageDisplayTimer = 0; // Countdown for page display LED flash
@@ -1430,11 +1507,11 @@ public:
     // Page 0: Strike (Level, Timbre, Meta) — Mallet, mid timbre, 50% level
     params[0] = {16384, 16384, 16384};
 
-    // Page 1: Blow (Level, Timbre, Meta) — Off by default
-    params[1] = {0, 16384, 16384};
+    // Page 1: Bow & Env (Level, Timbre, Shape) — AD envelope, off by default
+    params[1] = {0, 16384, 8192};
 
-    // Page 2: Bow & Env (Level, Timbre, Shape) — AD envelope
-    params[2] = {0, 16384, 8192};
+    // Page 2: Blow (Level, Timbre, Meta) — Off by default
+    params[2] = {0, 16384, 16384};
 
     // Page 3: Resonator Core (Geometry, Brightness, Damping)
     // Matching original Elements defaults: geometry=0.2, brightness=0.5,
@@ -1872,13 +1949,17 @@ public:
       }
     } else if (pageDisplayTimer > 0) {
       // Page just changed — show current page prominently
+      static const int page_to_led_map[6] = {0, 2, 4, 1, 3, 5};
+      int activeLed = page_to_led_map[currentPage];
       for (int i = 0; i < 6; i++) {
-        LedOn(i, i == currentPage);
+        LedOn(i, i == activeLed);
       }
     } else {
       // Normal Operation: Display current page + Gate pulses
+      static const int page_to_led_map[6] = {0, 2, 4, 1, 3, 5};
+      int activeLed = page_to_led_map[currentPage];
       for (int i = 0; i < 6; i++) {
-        int32_t b = (i == currentPage) ? 1800 : 0;
+        int32_t b = (i == activeLed) ? 1800 : 0;
 
         // Pulse LED 4 on gate activity
         if (i == 4 && previousGate)
@@ -1924,11 +2005,14 @@ public:
     // Check pulse inputs at full 48kHz rate to avoid missing triggers.
     if (PulseIn1RisingEdge()) {
       midi_velocity_q15 = 25600; // Default to velocity 100 for physical triggers
-      triggerBuffered = true;
+      if (!Connected(ComputerCard::Pulse1)) {
+        triggerBuffered = true;
+      }
     }
     if (midi_trigger) {
-      triggerBuffered = true;
-      // We'll clear midi_trigger below once we've sampled the pitch
+      if (!Connected(ComputerCard::Pulse1)) {
+        triggerBuffered = true;
+      }
     }
 
     // ── Read Raw Inputs ─────────────────────────────────────────────
@@ -1954,27 +2038,66 @@ public:
     cv1_acc = cv1_acc - (cv1_acc >> 8) + cv1_raw;
     int32_t cv1_smoothed = cv1_acc >> 8;
 
+    cv1_fast_acc = cv1_fast_acc - (cv1_fast_acc >> 3) + cv1_raw;
+    int32_t cv1_fast = cv1_fast_acc >> 3;
+
     // Sample & Hold logic triggered by Pulse In 1 or MIDI Note On
     static bool last_p1_sh = false;
     bool p1_now = PulseIn1();
     bool midi_trig_local = midi_trigger;
     bool pulse1_connected = Connected(ComputerCard::Pulse1);
 
-    int32_t raw_pitch =
-        Connected(ComputerCard::CV1) ? ((cv1_smoothed * 15) >> 1) : 0;
-
     if (pulse1_connected) {
       // S&H and Quantization active
-      if ((p1_now && !last_p1_sh) || midi_trig_local) {
-        // Quantize to nearest semitone (256 in Q8) and add MIDI offset
+      if (p1_now && !last_p1_sh) {
+        sh_settling_timer = 96; // 2ms at 48kHz
+        sh_pending = true;
+      }
+
+      if (sh_pending) {
+        if (sh_settling_timer > 0) {
+          sh_settling_timer--;
+        }
+        if (sh_settling_timer == 0) {
+          int32_t raw_pitch = Connected(ComputerCard::CV1) ? (cv1_fast * 9) : 0;
+          cv1_pitch_q8 = ((raw_pitch + 128) & ~0xFF) + midi_pitch_q8;
+          delayed_gate = true;
+          triggerBuffered = true;
+          sh_pending = false;
+        }
+      }
+
+      if (midi_trig_local) {
+        int32_t raw_pitch = Connected(ComputerCard::CV1) ? (cv1_fast * 9) : 0;
         cv1_pitch_q8 = ((raw_pitch + 128) & ~0xFF) + midi_pitch_q8;
-        midi_trigger = false; // Mark handled
+        triggerBuffered = true;
+        midi_trigger = false;
+        sh_pending = false; // Cancel any pending physical S&H
+      }
+
+      if (!p1_now) {
+        delayed_gate = false;
+        sh_pending = false;
       }
     } else {
       // Continuous tracking, no quantization
+      int32_t raw_pitch = Connected(ComputerCard::CV1) ? (cv1_smoothed * 9) : 0;
       cv1_pitch_q8 = raw_pitch + midi_pitch_q8;
       if (midi_trig_local)
         midi_trigger = false;
+      delayed_gate = false;
+      sh_pending = false;
+
+      // ── Rings-style auto-strum on V/Oct pitch change ─────────────────
+      // When no Gate/Pulse is connected, strum the resonator whenever the
+      // pitch changes by ≥ 0.5 semitone. Exactly how Rings works standalone.
+      if (Connected(ComputerCard::CV1) && !midi_trig_local) {
+        int32_t snapped = (cv1_pitch_q8 + 128) & ~0xFF; // round to semitone
+        if (abs(snapped - last_auto_pitch_q8) > 128) {  // 0.5 semitone hysteresis
+          last_auto_pitch_q8 = snapped;
+          triggerBuffered = true;
+        }
+      }
     }
     last_p1_sh = p1_now;
 
@@ -2197,7 +2320,7 @@ public:
 
       // Build gate flags
       uint32_t flags = FIFO_FLAG_ACTIVE;
-      bool gateNow = PulseIn1() || triggerBuffered || midi_gate;
+      bool gateNow = (pulse1_connected ? delayed_gate : PulseIn1()) || triggerBuffered || midi_gate;
 
       if (gateNow)
         flags |= FIFO_FLAG_GATE;
@@ -2235,15 +2358,19 @@ public:
         outR = SoftLimitQ15(outR);
 
         // ── Stereo Delay / Reverb ───────────────────────────────
-        // Reverb parameter (Page 4 Y) controls both the mix level and the room size/decay.
-        // Scaling the decay from 2000 (tight room) to 32440 (infinite cathedral) gives
-        // the user extremely responsive control over the space size.
+        // Reverb parameter (Page 4 Y) controls mix level, room decay, and size.
+        // All three are smoothed via IIR (>> 7, ~5ms) before passing to the reverb
+        // engine, eliminating zipper noise when turning the reverb knob.
         int32_t reverb_amt = params[4].pY;
-        int32_t rev_decay = 2000 + mul_q15(reverb_amt, 30440);
-        int32_t rev_damp = 16384;
-        int32_t size_ratio = 6554 + mul_q15(reverb_amt, 26214); // 0.2 to 1.0 size
+        int32_t rev_decay  = 2000 + mul_q15(reverb_amt, 30440);
+        int32_t rev_damp   = 16384;
+        int32_t size_ratio = 6554 + mul_q15(reverb_amt, 26214); // 0.2..1.0
 
-        reverb.Process(outL, outR, reverb_amt, rev_decay, rev_damp, size_ratio);
+        smooth_reverb_amt += (reverb_amt - smooth_reverb_amt) >> 7;
+        smooth_rev_decay  += (rev_decay  - smooth_rev_decay)  >> 7;
+        smooth_size_ratio += (size_ratio - smooth_size_ratio) >> 7;
+
+        reverb.Process(outL, outR, smooth_reverb_amt, smooth_rev_decay, rev_damp, smooth_size_ratio);
 
         // ── Soft Clip ───────────────────────────────────────────
         outL = SoftClipQ15(outL);

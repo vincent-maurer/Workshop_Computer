@@ -151,19 +151,26 @@ struct SvfQ15 {
         int32_t rgs1 = (int32_t)(((int64_t)rg_sum * state1) >> 14);
         int32_t hp = (int32_t)(((int64_t)(x - rgs1 - state2) * h) >> 15);
         
-        int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
+        int64_t gbp_64 = ((int64_t)g * hp) >> 14;
+        if (gbp_64 > 1000000000) gbp_64 = 1000000000;
+        else if (gbp_64 < -1000000000) gbp_64 = -1000000000;
+        int32_t gbp = (int32_t)gbp_64;
+        
         int32_t bp = gbp + state1;
         state1 = gbp + bp;
         
-        int32_t glp = (int32_t)(((int64_t)g * bp) >> 14);
+        int64_t glp_64 = ((int64_t)g * bp) >> 14;
+        if (glp_64 > 1000000000) glp_64 = 1000000000;
+        else if (glp_64 < -1000000000) glp_64 = -1000000000;
+        int32_t glp = (int32_t)glp_64;
+        
         int32_t lp = glp + state2;
         state2 = glp + lp;
         
-        // Anti-windup: clamp slightly below int32 max to prevent overflow
-        if (state1 > 100000000) state1 = 100000000;
-        else if (state1 < -100000000) state1 = -100000000;
-        if (state2 > 100000000) state2 = 100000000;
-        else if (state2 < -100000000) state2 = -100000000;
+        if (state1 > 500000000) state1 = 500000000;
+        else if (state1 < -500000000) state1 = -500000000;
+        if (state2 > 500000000) state2 = 500000000;
+        else if (state2 < -500000000) state2 = -500000000;
         
         out_bp = bp >> 6;
         out_lp = lp >> 6;
@@ -187,27 +194,42 @@ struct SvfQ15 {
         
         while (size--) {
             int32_t rgs1 = (int32_t)(((int64_t)rg_sum * s1) >> 14);
-            int32_t hp = (int32_t)(((int64_t)(*in - rgs1 - s2) * h) >> 15);
+            int32_t diff = (*in << 6) - rgs1 - s2;
+            int32_t hp = (int32_t)(((int64_t)diff * h) >> 15);
             
-            int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
+            int64_t gbp_64 = ((int64_t)g * hp) >> 14;
+            if (gbp_64 > 1000000000) gbp_64 = 1000000000;
+            else if (gbp_64 < -1000000000) gbp_64 = -1000000000;
+            int32_t gbp = (int32_t)gbp_64;
+            
             int32_t bp = gbp + s1;
             s1 = gbp + bp;
             
-            int32_t glp = (int32_t)(((int64_t)g * bp) >> 14);
+            int64_t glp_64 = ((int64_t)g * bp) >> 14;
+            if (glp_64 > 1000000000) glp_64 = 1000000000;
+            else if (glp_64 < -1000000000) glp_64 = -1000000000;
+            int32_t glp = (int32_t)glp_64;
+            
             int32_t lp = glp + s2;
             s2 = glp + lp;
             
+            // Anti-windup
+            if (s1 > 500000000) s1 = 500000000;
+            else if (s1 < -500000000) s1 = -500000000;
+            if (s2 > 500000000) s2 = 500000000;
+            else if (s2 < -500000000) s2 = -500000000;
+            
             int32_t value;
             switch (mode) {
-                case FILT_LP:  value = lp; break;
-                case FILT_BP:  value = bp; break;
-                case FILT_BPN: value = (int32_t)(((int64_t)bp * r) >> 14); break;
-                case FILT_HP:  value = hp; break;
-                default:       value = lp; break;
+                case FILT_LP:  value = lp >> 6; break;
+                case FILT_BP:  value = bp >> 6; break;
+                case FILT_BPN: value = (int32_t)(((int64_t)bp * r) >> 14) >> 6; break;
+                case FILT_HP:  value = hp >> 6; break;
+                default:       value = lp >> 6; break;
             }
             
-            *out1 += mul_q15(value, gain1_q15);
-            *out2 += mul_q15(value, gain2_q15);
+            *out1 += (value * gain1_q15) >> 15;
+            *out2 += (value * gain2_q15) >> 15;
             ++out1;
             ++out2;
             ++in;
@@ -226,22 +248,37 @@ struct SvfQ15 {
         
         while (size--) {
             int32_t rgs1 = (int32_t)(((int64_t)rg_sum * s1) >> 14);
-            int32_t hp = (int32_t)(((int64_t)(*in_out - rgs1 - s2) * h) >> 15);
+            int32_t diff = (*in_out << 6) - rgs1 - s2;
+            int32_t hp = (int32_t)(((int64_t)diff * h) >> 15);
             
-            int32_t gbp = (int32_t)(((int64_t)g * hp) >> 14);
+            int64_t gbp_64 = ((int64_t)g * hp) >> 14;
+            if (gbp_64 > 1000000000) gbp_64 = 1000000000;
+            else if (gbp_64 < -1000000000) gbp_64 = -1000000000;
+            int32_t gbp = (int32_t)gbp_64;
+            
             int32_t bp = gbp + s1;
             s1 = gbp + bp;
             
-            int32_t glp = (int32_t)(((int64_t)g * bp) >> 14);
+            int64_t glp_64 = ((int64_t)g * bp) >> 14;
+            if (glp_64 > 1000000000) glp_64 = 1000000000;
+            else if (glp_64 < -1000000000) glp_64 = -1000000000;
+            int32_t glp = (int32_t)glp_64;
+            
             int32_t lp = glp + s2;
             s2 = glp + lp;
             
+            // Anti-windup
+            if (s1 > 500000000) s1 = 500000000;
+            else if (s1 < -500000000) s1 = -500000000;
+            if (s2 > 500000000) s2 = 500000000;
+            else if (s2 < -500000000) s2 = -500000000;
+            
             switch (mode) {
-                case FILT_LP:  *in_out = lp; break;
-                case FILT_BP:  *in_out = bp; break;
-                case FILT_BPN: *in_out = (int32_t)(((int64_t)bp * r) >> 14); break;
-                case FILT_HP:  *in_out = hp; break;
-                default:       *in_out = lp; break;
+                case FILT_LP:  *in_out = lp >> 6; break;
+                case FILT_BP:  *in_out = bp >> 6; break;
+                case FILT_BPN: *in_out = (int32_t)(((int64_t)bp * r) >> 14) >> 6; break;
+                case FILT_HP:  *in_out = hp >> 6; break;
+                default:       *in_out = lp >> 6; break;
             }
             ++in_out;
         }

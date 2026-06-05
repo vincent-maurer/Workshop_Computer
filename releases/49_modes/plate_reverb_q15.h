@@ -177,7 +177,9 @@ public:
         sR = apTankR.process(sR);
         d2R.write(sR);
         
-        outL = outL + (((int32_t)sL * mix) >> 13);
-        outR = outR + (((int32_t)sR * mix) >> 13);
+        int32_t wetL = sL << 2;
+        int32_t wetR = sR << 2;
+        outL = outL + (((wetL - outL) * mix) >> 15);
+        outR = outR + (((wetR - outR) * mix) >> 15);
     }
 };

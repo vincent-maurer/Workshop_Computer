@@ -20,19 +20,19 @@
 
 // ── Q15 Arithmetic ──────────────────────────────────────────────────────────
 
-/// Multiply two Q15 values → Q15 result. Uses int64 to prevent overflow.
+/// Multiply two Q15 values → Q15 result.
 static inline int32_t mul_q15(int32_t a, int32_t b) {
-    return (int32_t)(((int64_t)a * b) >> 15);
+    return (a * b) >> 15;
 }
 
 /// Multiply Q15 × Q14 → Q15 result (for SVF g/r coefficients)
 static inline int32_t mul_q15_q14(int32_t a_q15, int32_t b_q14) {
-    return (int32_t)(((int64_t)a_q15 * b_q14) >> 14);
+    return (a_q15 * b_q14) >> 14;
 }
 
 /// Multiply Q15 × Q16 → Q15 result
 static inline int32_t mul_q15_q16(int32_t a_q15, int32_t b_q16) {
-    return (int32_t)(((int64_t)a_q15 * b_q16) >> 16);
+    return (a_q15 * b_q16) >> 16;
 }
 
 /// Multiply Q15 × Q20 → Q15 result (for envelope increments)
@@ -123,7 +123,7 @@ static inline int32_t InterpolateQ32_Param(const int32_t* table,
 
 /// Linear crossfade: result = a + (b - a) * fade, where fade is Q15 (0..32767)
 static inline int32_t CrossfadeQ15(int32_t a, int32_t b, int32_t fade_q15) {
-    return a + (((int64_t)(b - a) * fade_q15) >> 15);
+    return a + (((b - a) * fade_q15) >> 15);
 }
 
 /// One-pole filter: out += coefficient * (in - out)

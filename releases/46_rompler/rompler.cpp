@@ -199,17 +199,23 @@ volatile int32_t global_env_release_step = 19346688;
 volatile int32_t global_drum_env_release_step = 19346688;
 volatile int32_t midi_mod_wheel = 0;
 struct ChannelRouting {
-  int32_t target;              // 0 = Synth 1 (Audio 1), 1 = Synth 2 / Drums (Audio 2), 2 = CV1/Pulse1, 3 = CV2/Pulse2, 4 = Off
-  int32_t instrument_override; // -1 = No override, >=0 = preset index override in presets_index
+  int32_t target;              // 0 = Synth 1 (Audio 1), 1 = Synth 2 / Drums (Audio 2), 2 = CV1/Pulse1, 3 = CV2/Pulse2, 4 = Off, 5 = Synth 1 + CV1, 6 = Synth 2 + CV2
+  int16_t instrument_override; // -1 = No override, >=0 = preset index override in presets_index
+  int16_t volume_trim;         // -12 to +6 (decibels), default 0
 };
 
 struct PerformanceConfig {
   uint32_t stereo_mode;        // 0 = Stereo, 1 = Dual Mono
+  uint32_t cv1_mode;           // 0 = Gate, 1 = Trigger
+  uint32_t cv2_mode;           // 0 = Gate, 1 = Trigger
+  uint32_t loop_mode;          // 0 = Loop, 1 = Play Once & Advance
   ChannelRouting channels[16]; // Routing per MIDI channel (0..15)
+  uint8_t cc_maps[8];          // Custom MIDI CC maps: 0=Cutoff, 1=ReverbMix, 2=Res/Glitch, 3=Attack, 4=Decay/Release, 5..7=Reserved
 };
 
 extern volatile PerformanceConfig global_config;
 volatile PerformanceConfig global_config;
+volatile PerformanceConfig normal_mode_config;
 
 // Monophonic CV/Gate Out Note Trackers
 struct CVGateTracker {
@@ -309,6 +315,37 @@ volatile bool midi_playback_mode = false;
 volatile int32_t midi_transpose = 0;
 volatile uint32_t boot_sample_counter = 48000;
 
+// Debounced connection state to prevent ADC normalisation probe phase jitter from causing false triggers
+volatile bool debounced_connected[6] = {false, false, false, false, false, false};
+static int32_t connection_debounce_counter[6] = {0, 0, 0, 0, 0, 0};
+volatile uint32_t channel_bend_mult_q16[16] = {
+  65536, 65536, 65536, 65536, 65536, 65536, 65536, 65536,
+  65536, 65536, 65536, 65536, 65536, 65536, 65536, 65536
+};
+
+static const uint32_t db_to_gain_q15[19] = {
+  8230,  // -12 dB
+  9235,  // -11 dB
+  10362, // -10 dB
+  11627, // -9 dB
+  13045, // -8 dB
+  14636, // -7 dB
+  16422, // -6 dB
+  18426, // -5 dB
+  20675, // -4 dB
+  23197, // -3 dB
+  26029, // -2 dB
+  29205, // -1 dB
+  32768, //  0 dB (Index 12)
+  36766, // +1 dB
+  41252, // +2 dB
+  46287, // +3 dB
+  51933, // +4 dB
+  58269, // +5 dB
+  65381  // +6 dB
+};
+
+
 // Multi-timbral Channel Presets & Banks
 volatile uint16_t channel_banks[16];
 volatile uint16_t channel_presets[16];
@@ -333,6 +370,11 @@ struct MidiEntry {
   char name[24];
   const uint8_t *data;
   uint32_t size;
+  uint32_t stereo_mode; // 0 = Stereo, 1 = Dual Mono
+  uint32_t cv1_mode;    // 0 = Gate, 1 = Trigger
+  uint32_t cv2_mode;    // 0 = Gate, 1 = Trigger
+  uint32_t loop_mode;   // 0 = Loop, 1 = Play Once & Advance
+  ChannelRouting channels[16];
 };
 #define MAX_MIDI_FILES 16
 MidiEntry midi_files[MAX_MIDI_FILES];
@@ -377,7 +419,8 @@ void load_persistent_settings() {
       midi_playback_mode = false;
     }
   } else {
-    midi_playback_mode = false;
+    // No saved settings (fresh flash): auto-enable MIDI playback if files present
+    midi_playback_mode = (num_midi_files > 0);
   }
 }
 
@@ -456,6 +499,8 @@ uint32_t midi_num_tracks = 0;
 
 // Output beat clock timer (Pulse 2 Out)
 volatile int32_t pulse2_out_timer = 0;
+volatile int32_t cv1_trigger_timer = 0;
+volatile int32_t cv2_trigger_timer = 0;
 
 // Boot Silence and CV Override State
 volatile int32_t bootSilence = 48000;
@@ -543,7 +588,8 @@ static inline void queue_audio_event(uint8_t type, uint8_t note,
   } else if (type == AUDIO_EVT_NOTE_OFF) {
     push_note_off_event(note, channel);
   } else if (type == AUDIO_EVT_ALL_NOTES_OFF) {
-    push_all_notes_off_event(channel);
+    uint8_t ch = (note == 0xFF || channel == 0xFF) ? 0xFF : ((channel != 0) ? channel : note);
+    push_all_notes_off_event(ch);
   }
 }
 
@@ -753,6 +799,36 @@ void scan_midi_files() {
 
   // Initialize sensible defaults for global performance config:
   global_config.stereo_mode = 0; // Stereo default
+  global_config.cv1_mode = 0;
+  global_config.cv2_mode = 0;
+  global_config.loop_mode = 0;
+  normal_mode_config.stereo_mode = 0;
+  normal_mode_config.cv1_mode = 0;
+  normal_mode_config.cv2_mode = 0;
+  normal_mode_config.loop_mode = 0;
+
+  for (int i = 0; i < 8; i++) {
+    if (i == 0) {
+      global_config.cc_maps[i] = 74; // Cutoff
+      normal_mode_config.cc_maps[i] = 74;
+    } else if (i == 1) {
+      global_config.cc_maps[i] = 39; // Reverb Mix
+      normal_mode_config.cc_maps[i] = 39;
+    } else if (i == 2) {
+      global_config.cc_maps[i] = 71; // Glitch Mangle / Resonance
+      normal_mode_config.cc_maps[i] = 71;
+    } else if (i == 3) {
+      global_config.cc_maps[i] = 36; // Attack
+      normal_mode_config.cc_maps[i] = 36;
+    } else if (i == 4) {
+      global_config.cc_maps[i] = 37; // Decay/Release
+      normal_mode_config.cc_maps[i] = 37;
+    } else {
+      global_config.cc_maps[i] = 0;
+      normal_mode_config.cc_maps[i] = 0;
+    }
+  }
+
   for (int i = 0; i < 16; i++) {
     if (i == 0) {
       global_config.channels[i].target = 2; // CV/Gate 1
@@ -764,9 +840,12 @@ void scan_midi_files() {
       global_config.channels[i].target = 0; // Synth 1
     }
     global_config.channels[i].instrument_override = -1; // No override
+    global_config.channels[i].volume_trim = 0;           // Default 0 dB
+    normal_mode_config.channels[i].target = global_config.channels[i].target;
+    normal_mode_config.channels[i].instrument_override = global_config.channels[i].instrument_override;
+    normal_mode_config.channels[i].volume_trim = global_config.channels[i].volume_trim;
   }
 
-  // 1. Check flash at MIDI_BASE_ADDRESS
   const uint8_t *mids_base = (const uint8_t *)MIDI_BASE_ADDRESS;
   if (memcmp(mids_base, "MIDS", 4) == 0) {
     uint32_t flash_count = *(const uint32_t *)(mids_base + 4);
@@ -775,19 +854,50 @@ void scan_midi_files() {
         char name[24];
         uint32_t offset;
         uint32_t size;
+        uint32_t stereo_mode;
+        uint32_t cv1_mode;
+        uint32_t cv2_mode;
+        uint32_t loop_mode;
+        ChannelRouting channels[16];
       } __attribute__((packed));
 
       uint32_t header_offset = 8;
 
       // Check for CONF block right after num_midi_files (offset 8)
       if (memcmp(mids_base + 8, "CONF", 4) == 0) {
-        global_config.stereo_mode = *(const uint32_t *)(mids_base + 12);
+        normal_mode_config.stereo_mode = *(const uint32_t *)(mids_base + 12);
         const ChannelRouting *flash_channels = (const ChannelRouting *)(mids_base + 16);
         for (int i = 0; i < 16; i++) {
-          global_config.channels[i].target = flash_channels[i].target;
-          global_config.channels[i].instrument_override = flash_channels[i].instrument_override;
+          normal_mode_config.channels[i].target = flash_channels[i].target;
+          normal_mode_config.channels[i].instrument_override = flash_channels[i].instrument_override;
+          int16_t trim = flash_channels[i].volume_trim;
+          if (trim < -12 || trim > 6) {
+            normal_mode_config.channels[i].volume_trim = 0;
+          } else {
+            normal_mode_config.channels[i].volume_trim = trim;
+          }
         }
-        header_offset = 8 + 4 + 4 + 16 * 8; // CONF + stereo_mode + channels = 144
+        normal_mode_config.cv1_mode = *(const uint32_t *)(mids_base + 144);
+        normal_mode_config.cv2_mode = *(const uint32_t *)(mids_base + 148);
+        normal_mode_config.loop_mode = *(const uint32_t *)(mids_base + 152);
+
+        // Read custom CC mapping bytes
+        for (int i = 0; i < 8; i++) {
+          uint8_t val = mids_base[156 + i];
+          if (val == 0xFF || (val == 0 && i < 5)) {
+            // Use defaults
+            if (i == 0) normal_mode_config.cc_maps[i] = 74; // Cutoff
+            else if (i == 1) normal_mode_config.cc_maps[i] = 39; // Reverb Mix
+            else if (i == 2) normal_mode_config.cc_maps[i] = 71; // Glitch Mangle / Resonance
+            else if (i == 3) normal_mode_config.cc_maps[i] = 36; // Attack
+            else if (i == 4) normal_mode_config.cc_maps[i] = 37; // Decay/Release
+            else normal_mode_config.cc_maps[i] = 0;
+          } else {
+            normal_mode_config.cc_maps[i] = val;
+          }
+        }
+
+        header_offset = 8 + 156; // CONF block is 156 bytes, so 8 + 156 = 164
       }
 
       const FlashMidiHeader *hdrs = (const FlashMidiHeader *)(mids_base + header_offset);
@@ -798,6 +908,20 @@ void scan_midi_files() {
           memcpy(midi_files[num_midi_files].name, hdrs[i].name, 24);
           midi_files[num_midi_files].data = mids_base + hdrs[i].offset;
           midi_files[num_midi_files].size = hdrs[i].size;
+          midi_files[num_midi_files].stereo_mode = hdrs[i].stereo_mode;
+          midi_files[num_midi_files].cv1_mode = hdrs[i].cv1_mode;
+          midi_files[num_midi_files].cv2_mode = hdrs[i].cv2_mode;
+          midi_files[num_midi_files].loop_mode = hdrs[i].loop_mode;
+          for (int c = 0; c < 16; c++) {
+            midi_files[num_midi_files].channels[c].target = hdrs[i].channels[c].target;
+            midi_files[num_midi_files].channels[c].instrument_override = hdrs[i].channels[c].instrument_override;
+            int16_t trim = hdrs[i].channels[c].volume_trim;
+            if (trim < -12 || trim > 6) {
+              midi_files[num_midi_files].channels[c].volume_trim = 0;
+            } else {
+              midi_files[num_midi_files].channels[c].volume_trim = trim;
+            }
+          }
           num_midi_files++;
         }
       }
@@ -810,6 +934,42 @@ void scan_midi_files() {
   }
 }
 
+void apply_midi_mode_configuration() {
+  if (midi_playback_mode && num_midi_files > 0 && selectedMidiIdx >= 0 && selectedMidiIdx < (int32_t)num_midi_files) {
+    global_config.stereo_mode = midi_files[selectedMidiIdx].stereo_mode;
+    global_config.cv1_mode = midi_files[selectedMidiIdx].cv1_mode;
+    global_config.cv2_mode = midi_files[selectedMidiIdx].cv2_mode;
+    global_config.loop_mode = midi_files[selectedMidiIdx].loop_mode;
+    for (int i = 0; i < 16; i++) {
+      global_config.channels[i].target = midi_files[selectedMidiIdx].channels[i].target;
+      global_config.channels[i].instrument_override = midi_files[selectedMidiIdx].channels[i].instrument_override;
+      global_config.channels[i].volume_trim = midi_files[selectedMidiIdx].channels[i].volume_trim;
+    }
+    for (int i = 0; i < 8; i++) {
+      global_config.cc_maps[i] = normal_mode_config.cc_maps[i];
+    }
+  }
+}
+
+void apply_mode_configuration() {
+  if (midi_playback_mode) {
+    apply_midi_mode_configuration();
+  } else {
+    global_config.stereo_mode = normal_mode_config.stereo_mode;
+    global_config.cv1_mode = normal_mode_config.cv1_mode;
+    global_config.cv2_mode = normal_mode_config.cv2_mode;
+    global_config.loop_mode = normal_mode_config.loop_mode;
+    for (int i = 0; i < 16; i++) {
+      global_config.channels[i].target = normal_mode_config.channels[i].target;
+      global_config.channels[i].instrument_override = normal_mode_config.channels[i].instrument_override;
+      global_config.channels[i].volume_trim = normal_mode_config.channels[i].volume_trim;
+    }
+    for (int i = 0; i < 8; i++) {
+      global_config.cc_maps[i] = normal_mode_config.cc_maps[i];
+    }
+  }
+}
+
 void stop_all_notes_and_gates();
 
 void start_midi_playback(const uint8_t *data, uint32_t size) {
@@ -818,6 +978,7 @@ void start_midi_playback(const uint8_t *data, uint32_t size) {
   if (memcmp(data, "MThd", 4) != 0)
     return;
 
+  apply_midi_mode_configuration();
   stop_all_notes_and_gates();
 
   // Clear tape loop buffer on playback start/switch
@@ -983,7 +1144,10 @@ void process_next_midi_event(uint32_t t) {
     } else if (event_type == 0xD0) {
       ts.ptr += 1;
     } else if (event_type == 0xE0) {
-      ts.ptr += 2;
+      uint8_t lsb = *ts.ptr++;
+      uint8_t msb = *ts.ptr++;
+      uint8_t packet[3] = {status, lsb, msb};
+      handle_midi_message(packet, 3);
     }
   } else if (status == 0xFF) {
     uint8_t meta_type = *ts.ptr++;
@@ -997,7 +1161,7 @@ void process_next_midi_event(uint32_t t) {
     } else if (meta_type == 0x51 && len == 3) {
       uint32_t tempo =
           (meta_data[0] << 16) | (meta_data[1] << 8) | meta_data[2];
-      if (ComputerCard::ThisPtr()->Disconnected(ComputerCard::Pulse2)) {
+      if (!debounced_connected[ComputerCard::Input::Pulse2]) {
         midi_tempo_us = tempo;
       }
     }
@@ -1130,12 +1294,26 @@ void step_midi_sequencer_ticks(uint32_t ticks_to_step) {
     }
 
     if (!any_active) {
+      // Kill any held voices / CV gates before restarting or stopping
+      push_all_notes_off_event(0xFF);
       if (midi_playback_mode && num_midi_files > 0) {
-        if (pending_midi_idx != selectedMidiIdx && pending_midi_idx >= 0 && pending_midi_idx < (int32_t)num_midi_files) {
-          selectedMidiIdx = pending_midi_idx;
+        if (global_config.loop_mode == 1) {
+          // Play-once-and-advance: prime next clip (wrapping), stop
+          selectedMidiIdx = (selectedMidiIdx + 1) % (int32_t)num_midi_files;
+          pending_midi_idx = selectedMidiIdx;
+          start_midi_playback(midi_files[selectedMidiIdx].data,
+                              midi_files[selectedMidiIdx].size);
+          // apply the new file's config then stop
+          apply_midi_mode_configuration();
+          midi_playing = false;
+        } else {
+          // Loop mode: restart current clip (or switch to pending if queued)
+          if (pending_midi_idx != selectedMidiIdx && pending_midi_idx >= 0 && pending_midi_idx < (int32_t)num_midi_files) {
+            selectedMidiIdx = pending_midi_idx;
+          }
+          start_midi_playback(midi_files[selectedMidiIdx].data,
+                              midi_files[selectedMidiIdx].size);
         }
-        start_midi_playback(midi_files[selectedMidiIdx].data,
-                            midi_files[selectedMidiIdx].size);
       } else {
         midi_playing = false;
       }
@@ -1598,7 +1776,8 @@ public:
   int16_t CVIn2() { return ComputerCard::CVIn2(); }
   void PulseOut1(bool val) { ComputerCard::PulseOut1(val); }
   void PulseOut2(bool val) { ComputerCard::PulseOut2(val); }
-  bool Connected(Input i) { return ComputerCard::Connected(i); }
+  bool Connected(Input i) { return debounced_connected[i]; }
+  bool Disconnected(Input i) { return !debounced_connected[i]; }
   int32_t KnobVal(Knob ind) { return ComputerCard::KnobVal(ind); }
   Switch SwitchVal() { return ComputerCard::SwitchVal(); }
   void BootLed(int i, bool on) { LedOn(i, on); }
@@ -1682,7 +1861,7 @@ public:
         }
 
         reverb.Process(rev_out_L, rev_out_R, rev_mix, rev_decay, rev_damp, 0,
-                       (global_config.stereo_mode != 0));
+                       false);
       }
       frame.L = rev_out_L;
       frame.R = rev_out_R;
@@ -1719,6 +1898,7 @@ public:
           }
           if (next_mode != midi_playback_mode) {
             midi_playback_mode = next_mode;
+            apply_mode_configuration();
             save_persistent_settings(midi_playback_mode);
           }
         }
@@ -1940,13 +2120,11 @@ public:
         uint32_t duration = now_ms - sw_press_time;
 
         if (last_sw == Switch::Down) {
-          // Commit pattern pre-selection on release from a long Switch Down press
+          // Long Down release: commit queued pattern selection
           if (midi_playback_mode && duration >= 500) {
             pending_midi_idx = selected_pattern_knob_idx;
-          }
-
-          if (duration < 500 && !unfrozen_on_press) {
-            // Short flick Down: Toggle Freeze ON
+          } else if (duration < 500 && !unfrozen_on_press) {
+            // Short Down release (not an unfreeze): Toggle Freeze ON
             freeze_active = true;
             if (midi_playback_mode) {
               // Freeze instantly on the current active state
@@ -1977,9 +2155,9 @@ public:
             stutter_volume = 32767;
             queue_audio_event(AUDIO_EVT_ALL_NOTES_OFF, 0xFF);
           }
-        } else if (last_sw == Switch::Up && duration < 500) {
-          // Short flick Up: Toggle Play/Stop (only in MIDI mode)
-          if (midi_playback_mode) {
+        } else if (last_sw == Switch::Up) {
+          // Up release (short flick): Toggle Play/Stop (only in MIDI mode)
+          if (midi_playback_mode && duration < 500) {
             if (midi_playing) {
               midi_playing = false;
               stop_all_notes_and_gates();
@@ -2168,9 +2346,10 @@ public:
             if (voices[i].state != VOICE_OFF &&
                 voices[i].state != VOICE_RELEASE) {
               int32_t ch_target = global_config.channels[voices[i].channel].target;
-              if (ch_target == 0) {
+              if (ch_target == 0 || ch_target == 5) {
                 active_t0 = 1;
-              } else if (ch_target == 1 || voices[i].channel == 9) {
+              }
+              if (ch_target == 1 || ch_target == 6 || voices[i].channel == 9) {
                 active_t1 = 1;
               }
             }
@@ -2192,19 +2371,24 @@ public:
           bool tempo_on = midi_playing && ((midi_sequence_ticks % midi_division) < (midi_division / 4));
           LedOn(4, tempo_on);
 
-          // LED 5: Pause (OFF), Play (ON), Freeze (Blink), Pattern Queued (Fast Blink)
+          // LED 5: Stopped (OFF), Playing (ON), Freeze (slow blink), Play-Once (double-blink), Queued (fast blink)
           bool led5_on = false;
           if (midi_playing) {
             if (freeze_active) {
               led5_on = (now % 200 < 100);
+            } else if (global_config.loop_mode == 1) {
+              uint32_t phase = now % 1000;
+              led5_on = (phase < 100) || (phase >= 200 && phase < 300);
             } else if (pending_midi_idx != selectedMidiIdx) {
-              led5_on = (now % 100 < 50); // Fast blink for queued pattern
+              led5_on = (now % 100 < 50);
             } else {
               led5_on = true;
             }
           } else {
-            if (pending_midi_idx != selectedMidiIdx) {
-              led5_on = (now % 400 < 200); // Slow blink for queued pattern when stopped
+            if (global_config.loop_mode == 1) {
+              led5_on = (now % 600 < 100); // sparse pulse: play-once armed, stopped
+            } else if (pending_midi_idx != selectedMidiIdx) {
+              led5_on = (now % 400 < 200);
             }
           }
           LedOn(5, led5_on);
@@ -2281,8 +2465,13 @@ public:
             queue_audio_event(AUDIO_EVT_ALL_NOTES_OFF, 0);
 
             if (current_y_mode == 1) {
-              master_bank2 = presets_index[selectedPresetB].bank;
-              master_preset2 = presets_index[selectedPresetB].preset;
+              if (presets_index != nullptr) {
+                master_bank2 = presets_index[selectedPresetB].bank;
+                master_preset2 = presets_index[selectedPresetB].preset;
+              } else {
+                master_bank2 = 0;
+                master_preset2 = 0;
+              }
               channel_banks[1] = master_bank2;
               channel_presets[1] = master_preset2;
             }
@@ -2634,6 +2823,25 @@ public:
   // Core 1 Audio DSP Callback (Runs strictly at 48kHz, optimized integer-only
   // DSP)
   void __not_in_flash_func(ProcessSample)() override {
+    // ── Jack connection debouncing (48kHz) ──
+    for (int i = 0; i < 6; i++) {
+      bool raw_conn = ComputerCard::Connected((ComputerCard::Input)i);
+      if (raw_conn) {
+        if (connection_debounce_counter[i] < 480) { // 10ms debounce at 48kHz
+          connection_debounce_counter[i]++;
+          if (connection_debounce_counter[i] == 480) {
+            debounced_connected[i] = true;
+          }
+        }
+      } else {
+        if (connection_debounce_counter[i] > 0) {
+          connection_debounce_counter[i]--;
+          if (connection_debounce_counter[i] == 0) {
+            debounced_connected[i] = false;
+          }
+        }
+      }
+    }
 
     static int32_t gate_vol = 32767;
     static uint8_t sub_sample_counter = 0;
@@ -3244,7 +3452,7 @@ public:
           env_val = 2147483647;
         } else if (voice_state == VOICE_RELEASE) {
           int32_t rel_step = global_env_release_step;
-          if (v.channel == 9 || global_config.channels[v.channel].target == 1 || v.channel == 1) {
+          if (v.channel == 9 || global_config.channels[v.channel].target == 1 || global_config.channels[v.channel].target == 6 || v.channel == 1) {
             rel_step = global_drum_env_release_step;
           }
           if (env_val > rel_step) {
@@ -3317,6 +3525,12 @@ public:
         mod_phase_increment = v.cached_mod_increment;
       }
 
+      // Apply MIDI pitch bend
+      uint32_t bend_mult = channel_bend_mult_q16[v.channel];
+      if (bend_mult != 65536) {
+        mod_phase_increment = (mod_phase_increment * (uint64_t)bend_mult) >> 16;
+      }
+
       // Apply tape-stop speed scaling and freeze pitch detune
       if (freeze_active) {
         // Tape-stop speed scalar
@@ -3373,10 +3587,16 @@ public:
         // reverse non-looped: already handled underflow above with VOICE_OFF
       }
 
-      // Mix active voice sample into output buffers
       int32_t amp_sample = ((interpolated * (env_val >> 16)) >> 15);
       amp_sample = (amp_sample * v.velocity * 23) >> 17;
       amp_sample = (amp_sample * v.vol_atten_q15) >> 15;
+
+      // Apply per-channel volume trim
+      int32_t trim_db = global_config.channels[v.channel].volume_trim;
+      if (trim_db < -12) trim_db = -12;
+      if (trim_db > 6) trim_db = 6;
+      uint32_t gain_q15 = db_to_gain_q15[trim_db + 12];
+      amp_sample = (amp_sample * (int32_t)gain_q15) >> 15;
 
       int32_t ch_target = global_config.channels[v.channel].target;
       if (!midi_playback_mode) {
@@ -3385,9 +3605,12 @@ public:
         } else if (v.channel == 1) {
           ch_target = 1;
         } else {
-          if (ch_target == 2) ch_target = 0;
-          if (ch_target == 3) ch_target = 1;
+          if (ch_target == 2 || ch_target == 5) ch_target = 0;
+          if (ch_target == 3 || ch_target == 6) ch_target = 1;
         }
+      } else {
+        if (ch_target == 2 || ch_target == 5) ch_target = 0;
+        if (ch_target == 3 || ch_target == 6) ch_target = 1;
       }
 
       if (global_config.stereo_mode == 0) { // Stereo
@@ -3588,118 +3811,125 @@ public:
       AudioOut2(clamp_audio(mixed_R));
     }
 
-    // ── CV / Gate Outputs ──
-    if (midi_playback_mode) {
-      int32_t cv1_transpose_offset = 0;
-      if (Connected(Input::CV1)) {
-        int32_t cv1_raw = CVIn1();
-        static int32_t cv1_smooth_out = 0;
-        cv1_smooth_out = cv1_smooth_out - (cv1_smooth_out >> 6) + cv1_raw;
-        int32_t smoothed = cv1_smooth_out >> 6;
-        cv1_transpose_offset = quantize_semitone((smoothed * 15) >> 1);
-      }
+    // ── CV / Gate Outputs (Unified Live & Playback) ──
+    int32_t cv1_transpose_offset = 0;
+    if (Connected(Input::CV1)) {
+      int32_t cv1_raw = CVIn1();
+      cv1_transpose_offset = quantize_semitone((cv1_raw * 15) >> 1);
+    }
 
-      // CV1 and Gate 1 (Pulse 1)
-      if (cv1_out_gate) {
-        PulseOut1(true);
-        int32_t out_note = cv1_out_note;
+    // Decrement trigger timers
+    if (cv1_trigger_timer > 0) cv1_trigger_timer--;
+    if (cv2_trigger_timer > 0) cv2_trigger_timer--;
+
+    // Determine if CV2 is used as a pitch target
+    bool cv2_is_pitch = false;
+    for (int i = 0; i < 16; i++) {
+      if (global_config.channels[i].target == 3 || global_config.channels[i].target == 6) {
+        cv2_is_pitch = true;
+        break;
+      }
+    }
+
+    // Compute freeze tape speed pitch drop in whole semitones (integer, no floats).
+    // Uses bit-counting integer log2: count octaves down then linearly interpolate
+    // the fractional semitone within the octave. Each halving = -12 semitones.
+    int32_t tape_drop = 0;
+    if (freeze_active && glitch_speed_factor_q15 < 32768) {
+      if (glitch_speed_factor_q15 <= 0) {
+        tape_drop = -120;
+      } else {
+        int32_t f = glitch_speed_factor_q15;
+        int32_t octaves = 0;
+        while (f < 32768) { f <<= 1; octaves++; }
+        // f is now in [32768, 65535]: 1.0..2.0 in Q15 fixed point
+        // Linear approx of fractional semitones within this octave
+        int32_t frac_semi = (12 * (f - 32768)) / 32768;
+        tape_drop = -(octaves * 12 - frac_semi);
+      }
+    }
+
+    // CV1 and Gate 1 (Pulse 1)
+    if (cv1_out_note >= 0) {
+      int32_t out_note = cv1_out_note;
+      if (midi_playback_mode) {
         if (cv1_out_channel != 9) {
           out_note += midi_transpose + cv1_transpose_offset;
         }
-        if (out_note < 0) out_note = 0;
-        if (out_note > 127) out_note = 127;
-        CVOut1MIDINote((uint8_t)out_note);
       } else {
-        PulseOut1(false);
+        out_note += page_coarse;
       }
+      if (freeze_active) {
+        out_note += (int32_t)tape_drop;
+      }
+      if (out_note < 0) out_note = 0;
+      if (out_note > 127) out_note = 127;
+      CVOut1MIDINote((uint8_t)out_note);
+    }
 
-      // CV2 and Gate 2 (Pulse 2)
-      if (cv2_out_gate) {
-        PulseOut2(true);
+    bool cv1_pin_state = false;
+    if (global_config.cv1_mode == 1 || cv1_out_channel == 9) { // Trigger mode or Drums channel
+      if (cv1_trigger_timer > 0) {
+        cv1_pin_state = true;
+      }
+    } else { // Gate mode
+      cv1_pin_state = cv1_out_gate;
+    }
+    PulseOut1(cv1_pin_state);
+
+    // CV2 and Gate 2 (Pulse 2)
+    if (cv2_is_pitch) {
+      if (cv2_out_note >= 0) {
         int32_t out_note = cv2_out_note;
-        if (cv2_out_channel != 9) {
-          out_note += midi_transpose + cv1_transpose_offset;
+        if (midi_playback_mode) {
+          if (cv2_out_channel != 9) {
+            out_note += midi_transpose + cv1_transpose_offset;
+          }
+        } else {
+          out_note += page_coarse;
+        }
+        if (freeze_active) {
+          out_note += (int32_t)tape_drop;
         }
         if (out_note < 0) out_note = 0;
         if (out_note > 127) out_note = 127;
         CVOut2MIDINote((uint8_t)out_note);
-      } else {
-        PulseOut2(false);
       }
     } else {
-      // Normal Mode Gate/CV Mirroring
-      int active_ch0_count = 0;
-      int32_t newest_ch0_note = -1;
-      uint32_t newest_ch0_age = 0;
+      // Envelope Follower output on CVOut2 when CV2 note is inactive
+      int32_t max_env = 0;
       for (int i = 0; i < MAX_VOICES; i++) {
-        if (voices[i].state != VOICE_OFF && voices[i].state != VOICE_RELEASE &&
-            voices[i].channel == 0) {
-          active_ch0_count++;
-          if (voices[i].age > newest_ch0_age) {
-            newest_ch0_age = voices[i].age;
-            newest_ch0_note = voices[i].midi_note;
+        if (voices[i].state != VOICE_OFF && voices[i].channel == 0) {
+          if (voices[i].env_val > max_env) {
+            max_env = voices[i].env_val;
           }
         }
       }
-      if (active_ch0_count > 0) {
-        PulseOut1(true);
-        if (newest_ch0_note != -1) {
-          int32_t output_note = newest_ch0_note + page_coarse;
-          if (output_note < 0)
-            output_note = 0;
-          if (output_note > 127)
-            output_note = 127;
-          CVOut1MIDINote((uint8_t)output_note);
-        }
-      } else {
-        PulseOut1(false);
-      }
+      int32_t env_mv = ((uint64_t)max_env * 5000) >> 31;
+      CVOut2Millivolts(env_mv);
+    }
 
-      if (Connected(Input::Pulse2)) {
-        int active_ch1_count = 0;
-        int32_t newest_ch1_note = -1;
-        uint32_t newest_ch1_age = 0;
-        for (int i = 0; i < MAX_VOICES; i++) {
-          if (voices[i].state != VOICE_OFF && voices[i].state != VOICE_RELEASE &&
-              voices[i].channel == 1) {
-            active_ch1_count++;
-            if (voices[i].age > newest_ch1_age) {
-              newest_ch1_age = voices[i].age;
-              newest_ch1_note = voices[i].midi_note;
-            }
-          }
+    if (cv2_is_pitch) {
+      bool cv2_pin_state = false;
+      if (global_config.cv2_mode == 1 || cv2_out_channel == 9) { // Trigger mode or Drums channel
+        if (cv2_trigger_timer > 0) {
+          cv2_pin_state = true;
         }
-        if (active_ch1_count > 0) {
-          PulseOut2(true);
-          if (newest_ch1_note != -1) {
-            int32_t output_note = newest_ch1_note + page_coarse;
-            if (output_note < 0)
-              output_note = 0;
-            if (output_note > 127)
-              output_note = 127;
-            CVOut2MIDINote((uint8_t)output_note);
-          }
-        } else {
-          PulseOut2(false);
-        }
-      } else {
+      } else { // Gate mode
+        cv2_pin_state = cv2_out_gate;
+      }
+      PulseOut2(cv2_pin_state);
+    } else {
+      // Beat clock pulse trigger fallback on PulseOut2 (when not playing CV2)
+      if (midi_playback_mode && !Connected(Input::Pulse2)) {
         if (pulse2_out_timer > 0) {
           pulse2_out_timer--;
           PulseOut2(true);
         } else {
           PulseOut2(false);
         }
-
-        int32_t max_env = 0;
-        for (int i = 0; i < MAX_VOICES; i++) {
-          if (voices[i].state != VOICE_OFF && voices[i].channel == 0) {
-            if (voices[i].env_val > max_env) {
-              max_env = voices[i].env_val;
-            }
-          }
-        }
-        int32_t env_mv = ((uint64_t)max_env * 5000) >> 31;
-        CVOut2Millivolts(env_mv);
+      } else {
+        PulseOut2(false);
       }
     }
 
@@ -3707,6 +3937,57 @@ public:
 };
 
 RomplerApp card;
+
+void trigger_sustaining_notes(uint32_t play_tick, bool include_current_tick) {
+  uint32_t len = 16 * midi_division;
+  struct SustainingTracker {
+    uint16_t min_dist;
+    uint8_t type; // 0 = none, 1 = ON, 2 = OFF
+    uint8_t velocity;
+    uint16_t bank;
+    uint8_t preset;
+  };
+  static SustainingTracker tracker[16][128];
+  for (int c = 0; c < 16; c++) {
+    for (int n = 0; n < 128; n++) {
+      tracker[c][n].min_dist = 0xFFFF;
+      tracker[c][n].type = 0;
+    }
+  }
+
+  for (int e = 0; e < MAX_LOOP_EVENTS; e++) {
+    if (tape_loop_buffer[e].active) {
+      uint8_t c = tape_loop_buffer[e].channel;
+      uint8_t n = tape_loop_buffer[e].note;
+      if (c < 16 && n < 128) {
+        uint32_t dist = (play_tick >= tape_loop_buffer[e].tick) ?
+                        (play_tick - tape_loop_buffer[e].tick) :
+                        (play_tick + len - tape_loop_buffer[e].tick);
+        if (!include_current_tick && dist == 0) {
+          continue;
+        }
+        if (dist < tracker[c][n].min_dist) {
+          tracker[c][n].min_dist = dist;
+          tracker[c][n].type = (tape_loop_buffer[e].type == AUDIO_EVT_NOTE_ON) ? 1 : 2;
+          tracker[c][n].velocity = tape_loop_buffer[e].velocity;
+          tracker[c][n].bank = tape_loop_buffer[e].bank;
+          tracker[c][n].preset = tape_loop_buffer[e].preset;
+        }
+      }
+    }
+  }
+
+  for (int c = 0; c < 16; c++) {
+    for (int n = 0; n < 128; n++) {
+      if (tracker[c][n].type == 1) {
+        uint8_t vel = (tracker[c][n].velocity * stutter_volume) >> 15;
+        if (vel > 0) {
+          push_note_on_event(n, vel, tracker[c][n].bank, tracker[c][n].preset, c, false);
+        }
+      }
+    }
+  }
+}
 
 void tick_midi_sequencer() {
   // Check pending pattern changes even if not playing
@@ -3735,6 +4016,26 @@ void tick_midi_sequencer() {
   uint32_t ticks_to_step = midi_tick_accumulator >> 16;
   midi_tick_accumulator &= 0xFFFF;
 
+  // Handle scrub changes even if ticks_to_step is 0
+  if (freeze_active) {
+    uint32_t len = 16 * midi_division;
+    uint32_t scrub_start_tick = (param_scrub * len) / 4095;
+    
+    static uint32_t last_scrub_start = 0;
+    if (scrub_start_tick != last_scrub_start) {
+      last_scrub_start = scrub_start_tick;
+      stutter_volume = 32767;
+
+      // 1. Kill old notes
+      queue_audio_event(AUDIO_EVT_ALL_NOTES_OFF, 0xFF);
+      memset(sequencer_ratchets, 0, sizeof(sequencer_ratchets));
+      elapsed_ticks = 0;
+
+      // 2. Trigger sustaining notes at the new scrub playhead position immediately (include current tick)
+      trigger_sustaining_notes(scrub_start_tick % len, true);
+    }
+  }
+
   if (ticks_to_step > 0) {
     if (freeze_active) {
       // Play events from tape loop buffer
@@ -3742,13 +4043,13 @@ void tick_midi_sequencer() {
       uint32_t scrub_start_tick = (param_scrub * len) / 4095;
       uint32_t freeze_len = get_stutter_length();
 
-      static uint32_t last_scrub_start = 0;
-      if (scrub_start_tick != last_scrub_start) {
-        last_scrub_start = scrub_start_tick;
-        stutter_volume = 32767;
-      }
-
       for (uint32_t step = 0; step < ticks_to_step; step++) {
+        // If we just wrapped around naturally, trigger sustaining notes at the beginning of the loop phase (exclude current tick because it will be processed by the normal event loop)
+        if (elapsed_ticks > 0 && elapsed_ticks % freeze_len == 0) {
+          uint32_t play_tick = (scrub_start_tick + (elapsed_ticks % freeze_len)) % len;
+          trigger_sustaining_notes(play_tick, false);
+        }
+
         // A. Process active sequencer ratchets on each sequencer tick
         for (int r = 0; r < 8; r++) {
           if (sequencer_ratchets[r].active) {
@@ -3942,13 +4243,11 @@ void stop_all_notes_and_gates() {
 }
 
 static inline int32_t quantize_semitone(int32_t raw_pitch_q8) {
-  int32_t rounded;
   if (raw_pitch_q8 >= 0) {
-    rounded = (raw_pitch_q8 + 128) >> 8;
+    return (raw_pitch_q8 + 128) / 256;
   } else {
-    rounded = (raw_pitch_q8 - 128) >> 8;
+    return (raw_pitch_q8 - 128) / 256;
   }
-  return rounded;
 }
 
 static uint32_t rand_seed = 12345;
@@ -3966,16 +4265,6 @@ void push_note_on_event(uint8_t note, uint8_t velocity, uint16_t bank,
 
   // 1. Get channel target and check overrides
   int32_t target = global_config.channels[channel].target;
-  if (!midi_playback_mode) {
-    if (channel == 0) {
-      target = 0;
-    } else if (channel == 1) {
-      target = 1;
-    } else {
-      if (target == 2) target = 0;
-      if (target == 3) target = 1;
-    }
-  }
   if (target == 4) {
     return; // Disabled channel
   }
@@ -4011,10 +4300,7 @@ void push_note_on_event(uint8_t note, uint8_t velocity, uint16_t bank,
       int32_t cv1_transpose_offset = 0;
       if (card.Connected(ComputerCard::Input::CV1)) {
         int32_t cv1_raw = card.CVIn1();
-        static int32_t cv1_smooth = 0;
-        cv1_smooth = cv1_smooth - (cv1_smooth >> 6) + cv1_raw;
-        int32_t smoothed = cv1_smooth >> 6;
-        cv1_transpose_offset = quantize_semitone((smoothed * 15) >> 1);
+        cv1_transpose_offset = quantize_semitone((cv1_raw * 15) >> 1);
       }
       
       int32_t mutation_pitch_offset = 0;
@@ -4070,18 +4356,22 @@ void push_note_on_event(uint8_t note, uint8_t velocity, uint16_t bank,
   }
 
   // 5. Handle CV/Gate Routing Targets
-  if (target == 2) { // CV1 / Pulse 1
+  if (target == 2 || target == 5) { // CV1 / Pulse 1
     cv1_tracker.push(note);
     cv1_out_note = cv1_tracker.get_active_note();
     cv1_out_channel = channel;
     cv1_out_gate = true;
-    return;
-  } else if (target == 3) { // CV2 / Pulse 2
+    cv1_trigger_timer = 480; // Start 10ms trigger pulse
+    if (target == 2) return;
+  }
+  
+  if (target == 3 || target == 6) { // CV2 / Pulse 2
     cv2_tracker.push(note);
     cv2_out_note = cv2_tracker.get_active_note();
     cv2_out_channel = channel;
     cv2_out_gate = true;
-    return;
+    cv2_trigger_timer = 480; // Start 10ms trigger pulse
+    if (target == 3) return;
   }
 
   ResolvedParams zones[4];
@@ -4192,23 +4482,13 @@ void push_note_on_event(uint8_t note, uint8_t velocity, uint16_t bank,
 
 void push_note_off_event(uint8_t note, uint8_t channel) {
   int32_t target = global_config.channels[channel].target;
-  if (!midi_playback_mode) {
-    if (channel == 0) {
-      target = 0;
-    } else if (channel == 1) {
-      target = 1;
-    } else {
-      if (target == 2) target = 0;
-      if (target == 3) target = 1;
-    }
-  }
   if (target == 4) {
     return;
   }
 
   record_tape_event(AUDIO_EVT_NOTE_OFF, note, 0, channel);
 
-  if (target == 2) { // CV1
+  if (target == 2 || target == 5) { // CV1
     cv1_tracker.remove(note);
     int32_t active = cv1_tracker.get_active_note();
     if (active != -1) {
@@ -4217,8 +4497,10 @@ void push_note_off_event(uint8_t note, uint8_t channel) {
     } else {
       cv1_out_gate = false;
     }
-    return;
-  } else if (target == 3) { // CV2
+    if (target == 2) return;
+  }
+  
+  if (target == 3 || target == 6) { // CV2
     cv2_tracker.remove(note);
     int32_t active = cv2_tracker.get_active_note();
     if (active != -1) {
@@ -4227,7 +4509,7 @@ void push_note_off_event(uint8_t note, uint8_t channel) {
     } else {
       cv2_out_gate = false;
     }
-    return;
+    if (target == 3) return;
   }
 
   AudioEvent evt;
@@ -4252,20 +4534,11 @@ void push_all_notes_off_event(uint8_t channel) {
     cv2_out_gate = false;
   } else {
     int32_t target = global_config.channels[channel].target;
-    if (!midi_playback_mode) {
-      if (channel == 0) {
-        target = 0;
-      } else if (channel == 1) {
-        target = 1;
-      } else {
-        if (target == 2) target = 0;
-        if (target == 3) target = 1;
-      }
-    }
-    if (target == 2) {
+    if (target == 2 || target == 5) {
       cv1_tracker.clear();
       cv1_out_gate = false;
-    } else if (target == 3) {
+    }
+    if (target == 3 || target == 6) {
       cv2_tracker.clear();
       cv2_out_gate = false;
     }
@@ -4375,6 +4648,7 @@ void start_resolved_voice_from_event(const TriggeredVoiceEvent &params,
 }
 
 void trigger_note_off_channel(uint8_t note, uint8_t channel) {
+  if (channel == 9) return; // Drum channel ignores Note Off to let percussion samples play to completion
   for (int i = 0; i < MAX_VOICES; i++) {
     if (voices[i].state != VOICE_OFF && voices[i].midi_note == note &&
         voices[i].channel == channel) {
@@ -4483,12 +4757,12 @@ void handle_midi_message(uint8_t *packet, int size) {
     int32_t val_q15 = (value * 32767) / 127;
     ComputerCard::Switch current_sw = card.SwitchVal();
 
-    if (controller == 34 || controller == 74) { // Cutoff
+    if (controller == global_config.cc_maps[0] || controller == 34 || controller == 74) { // Cutoff
       param_cutoff = val_q15;
       if (current_sw == ComputerCard::Switch::Up) {
         lockMain.engage(card.KnobVal(ComputerCard::Knob::Main));
       }
-    } else if (controller == 35 || controller == 71 ||
+    } else if (controller == global_config.cc_maps[2] || controller == 35 || controller == 71 ||
                controller == 70) { // Modulation Depth / Vibrato
       param_res = val_q15;
       if (current_sw == ComputerCard::Switch::Up) {
@@ -4496,12 +4770,12 @@ void handle_midi_message(uint8_t *packet, int size) {
       }
     } else if (controller == 1) { // Mod Wheel
       midi_mod_wheel = val_q15;
-    } else if (controller == 36) { // Attack
+    } else if (controller == global_config.cc_maps[3] || controller == 36) { // Attack
       param_attack = val_q15;
       if (current_sw == ComputerCard::Switch::Middle) {
         lockX.engage(card.KnobVal(ComputerCard::Knob::X));
       }
-    } else if (controller == 37) { // Decay
+    } else if (controller == global_config.cc_maps[4] || controller == 37) { // Decay
       param_decay = val_q15;
       param_release = val_q15; // Release tracks Decay
       if (current_sw == ComputerCard::Switch::Middle) {
@@ -4509,7 +4783,7 @@ void handle_midi_message(uint8_t *packet, int size) {
       }
     } else if (controller == 38) { // Release
       param_release = val_q15;
-    } else if (controller == 39) { // Reverb Mix
+    } else if (controller == global_config.cc_maps[1] || controller == 39) { // Reverb Mix
       param_reverb_mix = val_q15;
       if (current_sw == ComputerCard::Switch::Up) {
         lockY.engage(card.KnobVal(ComputerCard::Knob::Y));
@@ -4572,6 +4846,10 @@ void handle_midi_message(uint8_t *packet, int size) {
       activeBank = channel_banks[0];
     }
     queue_audio_event(AUDIO_EVT_ALL_NOTES_OFF, 0, 0, channel);
+  } else if (type == 0xE0) {
+    uint16_t bend_val = packet[1] | (packet[2] << 7); // 0..16383, 8192 is center
+    int32_t bend_cents = ((int32_t)bend_val - 8192) * 200 / 8192; // Default range: +/- 2 semitones (+/- 200 cents)
+    channel_bend_mult_q16[channel] = cents_to_pitch_multiplier_q16(bend_cents);
   }
 }
 }
@@ -4603,6 +4881,7 @@ int main() {
   }
   scan_midi_files();
   load_persistent_settings();
+  apply_mode_configuration();
   card.BootLed(1, true);
 
   // Initialize Reverb

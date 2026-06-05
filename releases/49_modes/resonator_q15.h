@@ -19,38 +19,40 @@ template<int max_size>
 struct DelayLineQ15 {
     int16_t line[max_size];
     uint16_t ptr;
-    uint16_t delay;
+    uint32_t delay_q15;
 
     void Init() {
         for (int i = 0; i < max_size; i++) line[i] = 0;
         ptr = 0;
-        delay = 1;
+        delay_q15 = 1 << 15;
     }
 
-    void set_delay(uint16_t d) {
-        if (d < 1) d = 1;
-        if (d >= max_size) d = max_size - 1;
-        delay = d;
+    void set_delay(uint32_t d_q15) {
+        if (d_q15 < (1 << 15)) d_q15 = 1 << 15;
+        if (d_q15 >= ((uint32_t)max_size << 15)) d_q15 = ((uint32_t)max_size - 1) << 15;
+        delay_q15 = d_q15;
     }
 
     int32_t Read() const {
-        uint16_t read_ptr = (ptr + max_size - delay) % max_size;
-        return line[read_ptr];
+        return ReadHermite(delay_q15);
     }
 
     void Write(int32_t sample) {
         if (sample > 32767) sample = 32767;
         if (sample < -32768) sample = -32768;
         line[ptr] = (int16_t)sample;
-        ptr = (ptr + 1) % max_size;
+        ptr = (ptr + 1) & (max_size - 1);
     }
     
     int32_t ReadHermite(int32_t delay_q15) const {
-        uint16_t int_delay = delay_q15 >> 15;
+        uint32_t int_delay = delay_q15 >> 15;
         int32_t frac = delay_q15 & 0x7FFF;
         
-        int32_t y1 = line[(ptr + max_size - int_delay) % max_size];
-        int32_t y2 = line[(ptr + max_size - int_delay - 1) % max_size];
+        uint32_t idx1 = (ptr + max_size - int_delay) & (max_size - 1);
+        uint32_t idx2 = (ptr + max_size - int_delay - 1) & (max_size - 1);
+        
+        int32_t y1 = line[idx1];
+        int32_t y2 = line[idx2];
         
         return y1 + mul_q15(frac, y2 - y1);
     }

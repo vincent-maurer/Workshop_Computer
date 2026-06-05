@@ -33,6 +33,11 @@ class StringQ15 {
     int32_t out_sample_[2];
     int32_t aux_sample_[2];
     
+    uint32_t last_frequency_inc_;
+    int32_t cached_delay_q15_;
+    int32_t last_lp_coef_;
+    int32_t cached_filter_delay_q15_;
+    
 public:
     void Init();
     void SetFrequency(uint32_t f) { frequency_inc_ = f; }

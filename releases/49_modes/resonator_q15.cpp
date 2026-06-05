@@ -115,9 +115,11 @@ size_t __attribute__((section(".time_critical.ComputeFilters"))) ResonatorQ15::C
         f_[i].SetGQ(g_q14, resonance_q15);
         
         if (i < kMaxBowedModesQ15) {
-            int32_t period = (partial_frequency > 0) ? 32768 / partial_frequency : 511;
-            while (period >= 512 && period > 1) period >>= 1;
-            d_bow_[i].set_delay((uint16_t)period);
+            int32_t period_q15 = (partial_frequency > 0) ? (1073741824 / partial_frequency) : (511 << 15);
+            while (period_q15 >= (512 << 15) && period_q15 > (1 << 15)) {
+                period_q15 >>= 1;
+            }
+            d_bow_[i].set_delay(period_q15);
             int32_t bow_res = 32767 + partial_frequency * 1500;
             f_bow_[i].SetGQ(g_q14, (bow_res < 328) ? 328 : bow_res);
         }
@@ -230,7 +232,7 @@ void __attribute__((section(".time_critical.resonator"))) ResonatorQ15::Process1
             
             // Shift cosine oscillator output to [0, 1] range
             amp_c = (amp_c + 32768) >> 1;
-            sum_center += mul_q15(s, amp_c) << 1; // Reduced gain from <<3 to <<1
+            sum_center += mul_q15(s, amp_c) << 2; // Boosted gain to <<2 (gain of 4)
         }
         
         // Bow Table (Expensive Division!)

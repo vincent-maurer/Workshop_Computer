@@ -19,6 +19,8 @@ public:
         ptr = 0;
         zero_state = 0;
         pole_state = 0;
+        last_freq_q15 = 0;
+        cached_delay_q15 = 0;
     }
 
     /// Process one sample.
@@ -31,9 +33,14 @@ public:
     int32_t Process(int32_t freq_q15, int32_t envelope, int32_t damping, int32_t timbre, int32_t input) {
         if (freq_q15 < 1) freq_q15 = 1;
         
-        // delay = 1.0 / frequency. Since freq_q15 is f/sr, delay is in samples.
-        // delay = 32768 / freq_q15. Result in Q15.
-        int32_t delay_q15 = (int32_t)((32768LL << 15) / freq_q15);
+        int32_t delay_q15;
+        if (freq_q15 == last_freq_q15) {
+            delay_q15 = cached_delay_q15;
+        } else {
+            delay_q15 = (int32_t)((32768LL << 15) / freq_q15);
+            last_freq_q15 = freq_q15;
+            cached_delay_q15 = delay_q15;
+        }
         
         // Cap delay at buffer size
         if (delay_q15 > (2046 << 15)) delay_q15 = 2046 << 15;
@@ -98,6 +105,8 @@ private:
     int ptr;
     int32_t zero_state;
     int32_t pole_state;
+    int32_t last_freq_q15;
+    int32_t cached_delay_q15;
 };
 
 #endif // TUBE_Q15_H_

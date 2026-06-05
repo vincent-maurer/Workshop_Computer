@@ -650,8 +650,6 @@ void __not_in_flash_func(ComputerCard::BufferFull)()
 	static volatile int32_t cvsm[2] = { 0, 0 };
 	__attribute__((unused)) static int np = 0, np1 = 0, np2 = 0;
 
-	adc_select_input(0);
-
 	// Advance external mux to next state
 	int next_mux_state = (mux_state + 1) & 0x3;
 	gpio_put(MX_A, next_mux_state & 1);

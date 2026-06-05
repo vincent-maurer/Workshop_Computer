@@ -6,684 +6,240 @@
     <title>Rompler Manager - SF2 Multisampler | Workshop Computer</title>
     <meta name="description" content="Web manager for the Workshop Computer SF2 Multisampler card. Load, optimize, preview and flash SoundFont files.">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="rompler_style.css">
     <style>
-        :root {
-            --bg: #0c0a09;
-            --card: rgba(28, 25, 23, 0.6);
-            --accent: #f59e0b;
-            --accent-dim: rgba(245, 158, 11, 0.1);
-            --accent-glow: rgba(245, 158, 11, 0.25);
-            --text: #f5f5f4;
-            --dim: #a8a29e;
-            --border: rgba(120, 113, 108, 0.15);
-            --green: #22c55e;
-            --red: #ef4444;
-            --blue: #3b82f6;
+        .led-dot.green {
+            background: #092414;
         }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-
-        body {
-            font-family: 'Outfit', sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            max-width: 1200px;
-            margin: 20px auto;
-            padding: 16px;
-            -webkit-font-smoothing: antialiased;
+        .led-dot.green.active {
+            background: #00ff66;
+            box-shadow: 0 0 8px #00ff66, inset 0 1px 1px rgba(255,255,255,0.6);
         }
-
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 24px;
-            padding: 0 10px;
+        .timeline-track-row:hover {
+            background: rgba(255, 144, 0, 0.04) !important;
         }
-
-        h1 {
-            color: var(--accent);
-            font-size: 1.8rem;
-            font-weight: 700;
-            letter-spacing: -0.02em;
-        }
-
-        .subtitle {
-            color: var(--dim);
-            font-size: 0.95rem;
-            margin-top: 4px;
-        }
-
-        .status-badge {
-            font-size: 0.75rem;
-            padding: 4px 10px;
-            border-radius: 6px;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid var(--border);
-            color: var(--dim);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .status-dot {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: var(--red);
-        }
-
-        .status-dot.online {
-            background: var(--green);
-            box-shadow: 0 0 8px var(--green);
-        }
-
-        .dashboard {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-
-        @media (max-width: 900px) {
-            .dashboard { grid-template-columns: 1fr; }
-            .combined-sf2-card, .combined-midi-card {
-                grid-template-columns: 1fr !important;
-                min-height: auto !important;
-            }
-            .combined-sf2-card > div:last-child, .combined-midi-card > div:last-child {
-                border-left: none !important;
-                padding-left: 0 !important;
-                margin-top: 24px;
-                border-top: 1px solid var(--border);
-                padding-top: 24px;
-            }
-            .combined-midi-card > div:last-child h2 {
-                display: none !important;
-            }
-        }
-
-        .card {
-            background: var(--card);
-            backdrop-filter: blur(12px);
-            border-radius: 12px;
-            padding: 24px;
-            border: 1px solid var(--border);
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-            display: flex;
-            flex-direction: column;
-            transition: all 0.2s;
-        }
-
-        .card.full-width { grid-column: 1 / -1; }
-
-        .card h2 {
-            font-size: 0.85rem;
-            color: var(--accent);
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            margin-bottom: 20px;
-            border-bottom: 1px solid var(--accent-dim);
-            padding-bottom: 8px;
-        }
-
-        .drop-zone {
-            border: 2px dashed var(--border);
-            border-radius: 8px;
-            padding: 40px 20px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.2s;
-            background: rgba(0, 0, 0, 0.15);
-        }
-
-        .drop-zone:hover, .drop-zone.drag-over {
-            border-color: var(--accent);
-            background: rgba(245, 158, 11, 0.05);
-        }
-
-        .drop-zone h3 { font-size: 1.1rem; margin-bottom: 8px; color: var(--text); }
-        .drop-zone p { font-size: 0.85rem; color: var(--dim); }
-        #fileInput { display: none; }
-
-        .sf2-details {
-            margin-top: 20px;
-            display: none;
-            flex-direction: column;
-            gap: 16px;
-        }
-
-        .detail-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-            font-size: 0.9rem;
-        }
-
-        .detail-label { color: var(--dim); }
-
-        .detail-value {
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 500;
-        }
-
-        .detail-value.warning { color: var(--red); }
-        .detail-value.ok { color: var(--green); }
-
-        .progress-container { margin-top: 20px; display: none; }
-
-        .progress-header {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.85rem;
-            margin-bottom: 8px;
-        }
-
-        .progress-bar {
+        /* Custom scrollbar for timeline tracks to match LCD look */
+        .timeline-tracks-outer::-webkit-scrollbar {
             height: 8px;
-            background: rgba(255, 255, 255, 0.05);
+            width: 8px;
+        }
+        .timeline-tracks-outer::-webkit-scrollbar-track {
+            background: #050d0b;
+        }
+        .timeline-tracks-outer::-webkit-scrollbar-thumb {
+            background: rgba(0, 255, 136, 0.2);
             border-radius: 4px;
-            overflow: hidden;
+        }
+        .timeline-tracks-outer::-webkit-scrollbar-thumb:hover {
+            background: rgba(0, 255, 136, 0.4);
         }
 
-        .progress-fill {
-            height: 100%;
-            background: var(--accent);
-            width: 0%;
-            transition: width 0.1s;
-            box-shadow: 0 0 8px var(--accent);
-        }
-
-        .actions {
-            display: flex;
-            gap: 12px;
-            margin-top: 20px;
-            flex-wrap: wrap;
-        }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
+        /* MIDI Channel Routing Grid & Pad styling */
+        .midi-routing-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
             gap: 8px;
-            padding: 10px 20px;
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            background: rgba(255, 255, 255, 0.05);
-            color: var(--text);
-            font-size: 0.9rem;
-            cursor: pointer;
-            transition: all 0.2s;
-            font-weight: 600;
-            flex: 1;
-            min-width: 150px;
-        }
-
-        .btn:hover:not(:disabled) {
-            border-color: var(--accent);
-            background: var(--accent-dim);
-            color: var(--accent);
-        }
-
-        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-        .btn-primary {
-            background: var(--accent);
-            color: var(--bg);
-            border: none;
-        }
-
-        .btn-primary:hover:not(:disabled) {
-            background: #d97706;
-            color: #fff;
-            box-shadow: 0 4px 12px rgba(245, 158, 11, 0.2);
-        }
-
-        /* Preset list with checkboxes */
-        .list-container {
-            max-height: 380px;
-            overflow-y: auto;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            background: rgba(0, 0, 0, 0.2);
-        }
-
-        .list-header {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 8px 14px;
-            border-bottom: 1px solid var(--border);
-            background: rgba(0,0,0,0.3);
-            font-size: 0.75rem;
-            color: var(--dim);
-            position: sticky;
-            top: 0;
-            z-index: 5;
-        }
-
-        .list-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px 16px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.02);
-            font-size: 0.85rem;
-            gap: 10px;
-        }
-
-        .list-item:hover { background: rgba(255, 255, 255, 0.02); }
-        .list-item.unchecked { opacity: 0.45; }
-
-        .list-item input[type="checkbox"] {
-            accent-color: var(--accent);
-            cursor: pointer;
-            width: 14px;
-            height: 14px;
-            flex-shrink: 0;
-        }
-
-        .item-name { font-weight: 500; flex: 1; }
-
-        .item-meta {
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--dim);
-            font-size: 0.78rem;
-            white-space: nowrap;
-        }
-
-        .tab-buttons {
-            display: flex;
-            gap: 8px;
-            margin-bottom: 12px;
-        }
-
-        .tab-btn {
-            background: transparent;
-            border: 1px solid var(--border);
-            color: var(--dim);
-            padding: 6px 12px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.8rem;
-            font-weight: 500;
-            transition: all 0.2s;
-        }
-
-        .tab-btn.active {
-            border-color: var(--accent);
-            background: var(--accent-dim);
-            color: var(--accent);
-        }
-
-        .toast {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            padding: 12px 24px;
-            border-radius: 12px;
-            background: var(--accent);
-            color: #000;
-            font-weight: 600;
-            font-size: 0.9rem;
-            transform: translateY(100px);
-            opacity: 0;
-            transition: all 0.3s;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
-            z-index: 99;
-        }
-
-        .toast.show { transform: translateY(0); opacity: 1; }
-        .toast.error { background: var(--red); color: #fff; }
-        .toast.success { background: var(--green); color: #fff; }
-
-        /* ─── Estimated Size Bar ─────────────────────── */
-        .est-bar-wrap {
-            margin-top: 12px;
-            background: rgba(0,0,0,0.25);
-            border-radius: 8px;
-            border: 1px solid var(--border);
-            padding: 12px 14px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .est-bar-label {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.8rem;
-        }
-
-        .est-bar-label span:first-child { color: var(--dim); }
-        .est-bar-label span:last-child {
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 600;
-        }
-
-        .est-bar {
-            height: 6px;
-            background: rgba(255,255,255,0.06);
-            border-radius: 3px;
-            overflow: hidden;
-        }
-
-        .est-bar-fill {
-            height: 100%;
-            background: linear-gradient(90deg, var(--accent), #d97706);
-            border-radius: 3px;
-            transition: width 0.3s ease;
-            box-shadow: 0 0 6px var(--accent-glow);
-        }
-
-        .est-bar-fill.over { background: linear-gradient(90deg, var(--red), #b91c1c); }
-
-        /* ─── Virtual Keyboard Section ───────────────── */
-        .keyboard-section {
-            margin-top: 28px;
-        }
-
-        .keyboard-section-title {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
             margin-bottom: 16px;
+            box-sizing: border-box;
+            max-width: 100%;
         }
-
-        .keyboard-section-title h2 {
-            font-size: 0.85rem;
-            color: var(--accent);
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            border: none;
-            margin: 0;
-            padding: 0;
+        @media (max-width: 768px) {
+            .midi-routing-grid {
+                grid-template-columns: repeat(4, 1fr);
+            }
         }
-
-        .keyboard-section-title .midi-status {
-            font-size: 0.75rem;
-            color: var(--dim);
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .keyboard-outer {
-            background: var(--card);
-            backdrop-filter: blur(12px);
-            border-radius: 12px;
-            padding: 20px;
-            border: 1px solid var(--border);
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+        .midi-channel-pad {
+            background: linear-gradient(180deg, #2b303c 0%, #1c1f26 100%);
+            border-top: 2px solid #4b5366;
+            border-left: 2px solid #4b5366;
+            border-right: 2px solid #101217;
+            border-bottom: 2px solid #101217;
+            border-radius: 6px;
+            padding: 8px 12px;
+            cursor: pointer;
             display: flex;
             flex-direction: column;
-            gap: 14px;
-        }
-
-        .keyboard-header {
-            display: flex;
             justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
-
-        .octave-display {
-            color: var(--accent);
-            font-weight: 600;
-            font-size: 0.9rem;
-            margin-left: 10px;
-        }
-
-        .keyboard-hint {
-            font-size: 0.72rem;
-            color: var(--dim);
-        }
-
-        .keyboard-hint b { color: var(--text); }
-
-        .keyboard-controls {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-
-        .kb-ctrl-label {
-            font-size: 0.78rem;
-            color: var(--dim);
-        }
-
-        .kb-ctrl-label b { color: var(--text); }
-
-        /* Velocity slider */
-        input[type="range"].vel-slider {
-            accent-color: var(--accent);
-            cursor: pointer;
-            width: 120px;
-        }
-
-        .keyboard-keys {
-            display: flex;
             position: relative;
-            height: 150px;
-            background: #111;
-            border-radius: 6px;
+            user-select: none;
+            min-height: 52px;
+            transition: all 0.1s ease;
+            box-sizing: border-box;
+            min-width: 0;
             overflow: hidden;
-            user-select: none;
-            border: 1px solid rgba(255,255,255,0.08);
         }
-
-        .key {
-            position: relative;
-            cursor: pointer;
-            transition: background 0.06s;
+        .midi-channel-pad:hover {
+            filter: brightness(1.15);
+            border-color: #5d677d #101217 #101217 #5d677d;
         }
-
-        .key.white {
-            flex: 1;
-            height: 100%;
-            background: linear-gradient(180deg, #2a2a2e 0%, #232327 100%);
-            border-right: 1px solid rgba(0,0,0,0.5);
-            z-index: 1;
+        .midi-channel-pad:active, .midi-channel-pad.selected {
+            background: linear-gradient(180deg, #16181e 0%, #0f1014 100%);
+            border-top: 2px solid #101217;
+            border-left: 2px solid #101217;
+            border-right: 2px solid #4b5366;
+            border-bottom: 2px solid #4b5366;
         }
-
-        .key.black {
+        .midi-channel-pad.selected {
+            box-shadow: 0 0 8px rgba(255, 148, 0, 0.4);
+        }
+        .midi-channel-pad.selected::before {
+            content: '';
             position: absolute;
-            width: 7%;
-            height: 62%;
-            background: linear-gradient(180deg, #0a0a0c 0%, #18181b 100%);
-            z-index: 20;
-            border-radius: 0 0 4px 4px;
-            border: 1px solid rgba(255,255,255,0.08);
-            border-top: none;
-        }
-
-        .key.white:hover { background: linear-gradient(180deg, #3f3f46 0%, #35353a 100%); }
-        .key.black:hover { background: linear-gradient(180deg, #27272a 0%, #1f1f23 100%); }
-
-        .key.white.active {
-            background: linear-gradient(180deg, var(--accent) 0%, #d97706 100%) !important;
-            box-shadow: inset 0 -4px 8px rgba(0,0,0,0.4), 0 0 20px var(--accent-glow);
-        }
-
-        .key.black.active {
-            background: linear-gradient(180deg, var(--accent) 0%, #b45309 100%) !important;
-            box-shadow: 0 0 12px var(--accent-glow);
-        }
-
-        .key-label {
-            position: absolute;
-            bottom: 8px;
-            left: 0;
-            right: 0;
-            text-align: center;
-            font-size: 0.6rem;
-            font-weight: 700;
-            color: var(--dim);
-            pointer-events: none;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        .key.black .key-label {
-            color: rgba(255, 255, 255, 0.3);
-            bottom: 10px;
-            font-size: 0.55rem;
-        }
-
-        .key.white.active .key-label { color: rgba(0,0,0,0.5); }
-        .key.black.active .key-label { color: rgba(0,0,0,0.4); }
-
-        /* Octave markers on white keys */
-        .key-note-name {
-            position: absolute;
-            bottom: 24px;
-            left: 0;
-            right: 0;
-            text-align: center;
-            font-size: 0.55rem;
-            color: rgba(255,255,255,0.18);
+            top: 0; left: 0; right: 0; bottom: 0;
+            border: 1px solid var(--accent);
+            border-radius: 4px;
             pointer-events: none;
         }
-
-        .keyboard-footer {
+        .midi-pad-header {
+            width: 100%;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding-top: 8px;
-            border-top: 1px solid var(--border);
-            flex-wrap: wrap;
-            gap: 8px;
         }
-
-        .midi-channel-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 0.78rem;
+        .midi-pad-number {
+            font-family: var(--font-lcd);
+            font-size: 0.95rem;
+            font-weight: bold;
             color: var(--dim);
         }
-
-        select.mini-select {
-            background: rgba(0,0,0,0.4);
-            border: 1px solid var(--border);
-            border-radius: 6px;
+        .midi-channel-pad.selected .midi-pad-number {
+            color: var(--accent);
+            text-shadow: 0 0 4px var(--accent-glow);
+        }
+        .midi-pad-badge {
+            font-size: 0.62rem;
+            padding: 2px 5px;
+            border-radius: 3px;
+            background: rgba(0,0,0,0.35);
             color: var(--text);
-            padding: 4px 8px;
-            font-family: inherit;
-            font-size: 0.78rem;
-            outline: none;
-            cursor: pointer;
+            font-weight: bold;
+            margin-top: 4px;
+            border: 1px solid rgba(255,255,255,0.05);
+            font-family: monospace;
+            text-transform: uppercase;
         }
-
-        .panic-btn {
-            padding: 4px 12px;
+        /* Dynamic LED in pad corner */
+        .midi-channel-pad .channel-led {
+            margin: 0;
+        }
+        
+        /* Edit Strip style */
+        .midi-channel-edit-strip {
+            background: #111317;
+            border: 2px inset rgba(0,0,0,0.4);
             border-radius: 6px;
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            background: rgba(239, 68, 68, 0.08);
-            color: var(--red);
-            font-size: 0.75rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.15s;
-        }
-
-        .panic-btn:hover {
-            background: rgba(239, 68, 68, 0.18);
-            border-color: var(--red);
-        }
-
-        .preview-toggle-btn {
-            padding: 4px 12px;
-            border-radius: 6px;
-            border: 1px solid rgba(59, 130, 246, 0.3);
-            background: rgba(59, 130, 246, 0.08);
-            color: var(--blue);
-            font-size: 0.75rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.15s;
+            padding: 14px 20px;
             display: flex;
+            flex-direction: row;
+            flex-wrap: wrap;
+            gap: 20px;
             align-items: center;
-            gap: 6px;
+            justify-content: space-between;
+            margin-top: 12px;
+            box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
+            box-sizing: border-box;
+            max-width: 100%;
         }
-
-        .preview-toggle-btn:hover {
-            background: rgba(59, 130, 246, 0.18);
-            border-color: var(--blue);
-        }
-
-        .preview-toggle-btn.active {
-            background: rgba(59, 130, 246, 0.25);
-            color: #60a5fa;
-            border-color: #60a5fa;
-            box-shadow: 0 0 10px rgba(59, 130, 246, 0.2);
-        }
-
-        /* Optimizer panel */
-        .optimizer-panel {
-            margin-top: 16px;
-            padding-top: 16px;
-            border-top: 1px dashed var(--border);
+        .midi-strip-info {
             display: flex;
             flex-direction: column;
-            gap: 12px;
+            justify-content: center;
         }
-
-        .opt-title {
-            font-size: 0.85rem;
+        .midi-strip-ch-label {
+            font-family: var(--font-lcd);
             color: var(--accent);
-            text-transform: uppercase;
+            font-size: 1.1rem;
             letter-spacing: 0.05em;
-            font-weight: 600;
+            font-weight: bold;
         }
-
-        .opt-select {
-            background: rgba(0,0,0,0.4);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            color: var(--text);
-            padding: 8px;
-            font-family: inherit;
-            font-size: 0.85rem;
-            outline: none;
-            cursor: pointer;
-            width: 100%;
+        .midi-strip-ch-sub {
+            font-size: 0.68rem;
+            color: var(--dim);
+            margin-top: 2px;
         }
-
-        .opt-check-row {
+        .midi-strip-fields {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            flex-grow: 1;
+            justify-content: flex-end;
+            align-items: center;
+        }
+        .midi-strip-field {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
         }
-
-        .opt-check-row input[type="checkbox"] {
-            accent-color: var(--accent);
-            cursor: pointer;
-            width: 15px;
-            height: 15px;
+        .midi-strip-field label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            font-weight: bold;
+            color: var(--dim);
         }
-
-        .opt-check-row label {
-            font-size: 0.85rem;
-            color: var(--text);
-            cursor: pointer;
-            user-select: none;
-        }
-
-        .opt-check-row label small { color: var(--dim); font-size: 0.78rem; }
     </style>
 </head>
 <body>
+    <div class="rack-chassis">
+        <div class="rack-ear left">
+            <div class="bolt"></div>
+            <div class="bolt"></div>
+            <div class="bolt"></div>
+        </div>
+        <div class="rack-faceplate">
     <div class="header">
         <div>
             <h1>Rompler Manager</h1>
             <p class="subtitle">General MIDI SF2 SoundFont Flasher &amp; Exporter</p>
         </div>
-        <div class="status-badge">
-            <div id="statusDot" class="status-dot"></div>
-            <span id="statusText">Disconnected</span>
+        <div style="display: flex; align-items: center;">
+            <div class="status-badge">
+                <div id="statusDot" class="status-dot"></div>
+                <span id="statusText">Disconnected</span>
+            </div>
+            <div class="jog-wheel-container">
+                <div class="jog-wheel-label">VALUE</div>
+                <div class="jog-wheel" onclick="this.style.transform = 'rotate(' + (Math.random() * 360) + 'deg)'">
+                    <div class="jog-finger-indent"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SYSTEM FLASHER / TRANSMITTER (Replaces printed schematic dataflow diagram) -->
+    <div class="printed-schematic" style="display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; color: var(--text); user-select: auto; margin-bottom: 24px; border: 1px solid var(--border); background: linear-gradient(180deg, #1f2229 0%, #15171c 100%);">
+        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <span style="font-family: var(--font-family); font-size: 0.72rem; border-color: var(--accent); color: var(--accent); text-shadow: 0 0 4px rgba(255,144,0,0.3);">⚡ SYSTEM TRANSMITTER</span>
+            <span style="border: none; background: transparent; box-shadow: none; font-size: 0.72rem; color: var(--dim);">[UF2 COMPILER] ──▶ [FLASH WRITER]</span>
+        </div>
+        
+        <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+            <!-- Card Size Mode selector -->
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 0.72rem; color: var(--dim); font-family: monospace; border: none; background: transparent; box-shadow: none; padding: 0;">CAPACITY:</span>
+                <select id="flashMode" class="mini-select" style="height: 24px; font-size: 0.72rem; padding: 2px 6px;">
+                    <option value="2097152" selected>2 MB (1 MB SoundFont)</option>
+                    <option value="16777216">16 MB (15 MB SoundFont)</option>
+                </select>
+            </div>
+
+            <!-- Progress Status screen (LCD style overlay progress bar) -->
+            <div class="lcd-readout-screen" id="progressContainer" style="display: none; padding: 4px 10px; font-family: 'Share Tech Mono', monospace; font-size: 0.8rem; border-radius: 4px; background: #000; color: var(--lcd-text); border: 1px solid #1a2520; min-width: 220px; text-align: left; position: relative; overflow: hidden; height: 28px; box-shadow: inset 0 2px 5px rgba(0,0,0,0.8);">
+                <!-- progress bar filling background -->
+                <div id="progressFill" style="position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: rgba(0, 255, 136, 0.25); transition: width 0.1s ease;"></div>
+                <div style="position: relative; z-index: 1; display: flex; justify-content: space-between; align-items: center; width: 100%; height: 100%;">
+                    <span id="progressStatus" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; text-shadow: 0 0 4px rgba(0,255,136,0.6);">Ready</span>
+                    <span id="progressPercent" style="text-shadow: 0 0 4px rgba(0,255,136,0.6);">0%</span>
+                </div>
+            </div>
+
+            <div style="display: flex; gap: 8px;">
+                <button class="btn btn-primary" id="btnFlashAll" style="min-width: unset; padding: 0 10px; height: 28px; font-size: 0.72rem; font-family: var(--font-family); font-weight: bold; letter-spacing: 0.05em;" title="Flash everything (Firmware, MIDI configuration, and SoundFont)">⚡ FLASH ALL</button>
+                <button class="btn" id="btnFlashMidi" style="min-width: unset; padding: 0 10px; height: 28px; font-size: 0.72rem; font-family: var(--font-family); font-weight: bold; letter-spacing: 0.05em;" title="Flash ONLY MIDI routing/configuration blocks (Instant!)">⚡ FLASH MIDI/CONFIG</button>
+                <button class="btn" id="btnFlashSf2" style="min-width: unset; padding: 0 10px; height: 28px; font-size: 0.72rem; font-family: var(--font-family); font-weight: bold; letter-spacing: 0.05em;" title="Flash ONLY SoundFont blocks (Erases/writes only the SoundFont partition)">⚡ FLASH SF2</button>
+                <button class="btn" id="btnDownload" style="min-width: unset; padding: 0 10px; height: 28px; font-size: 0.72rem; font-family: var(--font-family); font-weight: bold; letter-spacing: 0.05em;">↓ EXPORT COMBINED UF2</button>
+                <button class="btn" id="btnResetState" style="min-width: unset; padding: 0 10px; height: 28px; font-size: 0.72rem; font-family: var(--font-family); font-weight: bold; letter-spacing: 0.05em; border-color: rgba(255, 68, 68, 0.4); color: #ff5555;">↺ RESET STATE</button>
+            </div>
         </div>
     </div>
 
@@ -692,95 +248,71 @@
         <div class="card full-width combined-sf2-card" style="display: grid; grid-template-columns: 1fr 1.2fr; gap: 24px; min-height: 580px; align-items: stretch;">
             <!-- Left Column: SoundFont Loader -->
             <div style="display: flex; flex-direction: column; justify-content: flex-start; height: 100%;">
-                <h2>SoundFont Loader</h2>
-                <div class="drop-zone" id="dropZone">
-                    <h3>Drop a SoundFont file here</h3>
-                    <p>Or click to select an SF2 file from your computer</p>
-                    <p style="margin-top: 8px; color: var(--accent); font-weight: 500;">Supports standard SF2 files; optimize to fit your card</p>
-                    <input type="file" id="fileInput" accept=".sf2">
+                <h2>SoundFont Card Slot</h2>
+                <div class="pcm-slot-container">
+                    <div class="pcm-slot-bezel">
+                        <div class="drop-zone" id="dropZone">
+                            <h3>PCM SOUND EXPANSION CARD</h3>
+                            <p>INSERT CARD / DROP SF2 FILE HERE</p>
+                            <p style="margin-top: 8px; color: var(--accent); font-weight: 500;">Supports standard SF2 files; optimize to fit your card</p>
+                            <input type="file" id="fileInput" accept=".sf2">
+                        </div>
+                    </div>
+                    <div class="pcm-slot-controls">
+                        <div class="pcm-status-led">
+                            <div class="led-dot green active" id="cardLed"></div>
+                            <span>CARD READY</span>
+                        </div>
+                        <button class="pcm-eject-btn" type="button" onclick="document.getElementById('fileInput').click()">◀ INSERT/EJECT</button>
+                    </div>
                 </div>
 
                 <div class="sf2-details" id="sf2Details">
-                    <div class="detail-row">
-                        <span class="detail-label">File Name</span>
-                        <span class="detail-value" id="fileName" style="font-weight: 600; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="">-</span>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label" id="flashUsageLabel">Flash Usage</span>
-                        <span class="detail-value"><span id="fileSize">-</span> &nbsp;•&nbsp; <span id="flashUsage">-</span></span>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label">Parsed Info</span>
-                        <span class="detail-value"><span id="parsedBanks">-</span> banks, <span id="parsedPresets">-</span> presets, <span id="parsedSamples">-</span> samples</span>
-                    </div>
-
-                    <!-- ESTIMATED SIZE BAR -->
-                    <div class="est-bar-wrap" id="estBarWrap" style="display:none;">
-                        <div class="est-bar-label">
-                            <span>Estimated Output Size</span>
-                            <span id="estSizeLabel">-</span>
+                    <div class="lcd-readout-screen">
+                        <div class="detail-row">
+                            <span class="detail-label">File Name</span>
+                            <span class="detail-value" id="fileName" style="font-weight: 600; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="">-</span>
                         </div>
-                        <div class="est-bar">
-                            <div class="est-bar-fill" id="estBarFill" style="width:0%"></div>
+                        <div class="detail-row">
+                            <span class="detail-label" id="flashUsageLabel">Flash Usage</span>
+                            <span class="detail-value"><span id="fileSize">-</span> &nbsp;•&nbsp; <span id="flashUsage">-</span></span>
                         </div>
-                        <div class="est-bar-label" style="font-size:0.72rem;">
-                            <span id="estCheckedPresets" style="color:var(--dim);">All presets included</span>
-                            <span id="estFlashPct" style="color:var(--dim);">0% of selected card</span>
-                        </div>
-                    </div>
-
-                    <!-- SOUNDFONT OPTIMIZER & CONVERTER PANEL -->
-                    <div class="optimizer-panel">
-                        <h3 class="opt-title">SoundFont Optimization Options</h3>
-
-                        <div style="display:flex;flex-direction:column;gap:4px;">
-                            <label style="font-size:0.8rem;color:var(--dim);">Target Card Flash</label>
-                            <select id="flashMode" class="opt-select">
-                                <option value="2097152" selected>2 MB card (1 MB SoundFont area)</option>
-                                <option value="16777216">16 MB card (15 MB SoundFont area)</option>
-                            </select>
+                        <div class="detail-row">
+                            <span class="detail-label">Parsed Info</span>
+                            <span class="detail-value"><span id="parsedBanks">-</span> banks, <span id="parsedPresets">-</span> presets, <span id="parsedSamples">-</span> samples</span>
                         </div>
 
-                        <div style="display:flex;flex-direction:column;gap:4px;">
-                            <label style="font-size:0.8rem;color:var(--dim);">Target Sample Rate Limit</label>
-                            <select id="optSampleRate" class="opt-select">
-                                <option value="0">No Downsampling (Keep Original)</option>
-                                <option value="32000">Downsample to 32 kHz (Good Quality)</option>
-                                <option value="22050" selected>Downsample to 22.05 kHz (Compact)</option>
-                                <option value="16000">Downsample to 16 kHz (Ultra Compact)</option>
-                            </select>
+                        <!-- AUTO-OPTIMIZE SETTINGS (Retro style detail row) -->
+                        <div class="detail-row" style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px; margin-top: 6px; flex-wrap: wrap; gap: 8px; justify-content: flex-start; height: auto;">
+                            <span class="detail-label" style="color: var(--accent); font-family: monospace; font-size: 0.72rem; letter-spacing: 0.05em;">AUTO-OPTIMIZE ON FLASH:</span>
+                            <div style="display: flex; gap: 12px; align-items: center; width: 100%; margin-top: 2px;">
+                                <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 0.72rem; cursor: pointer; color: var(--text);">
+                                    <input type="checkbox" id="optMono" checked style="accent-color: var(--accent); cursor: pointer; width: 13px; height: 13px;"> Mono Mix
+                                </label>
+                                <select id="optSampleRate" class="mini-select" style="height: 22px; font-size: 0.72rem; padding: 1px 4px; flex-grow: 1;">
+                                    <option value="0">Original Rate</option>
+                                    <option value="32000">Limit to 32 kHz</option>
+                                    <option value="22050" selected>Limit to 22.05 kHz</option>
+                                    <option value="16000">Limit to 16 kHz</option>
+                                </select>
+                                <input type="checkbox" id="optRestructure" style="display: none;">
+                            </div>
                         </div>
 
-                        <div class="opt-check-row">
-                            <input type="checkbox" id="optMono" checked>
-                            <label for="optMono">Convert Stereo to Mono <small>(saves ~50% space)</small></label>
+                        <!-- ESTIMATED SIZE BAR -->
+                        <div class="est-bar-wrap" id="estBarWrap" style="display:none;">
+                            <div class="est-bar-label">
+                                <span>Estimated Output Size</span>
+                                <span id="estSizeLabel">-</span>
+                            </div>
+                            <div class="est-bar">
+                                <div class="est-bar-fill" id="estBarFill" style="width:0%"></div>
+                            </div>
+                            <div class="est-bar-label" style="font-size:0.72rem;">
+                                <span id="estCheckedPresets" style="color:var(--dim);">All presets included</span>
+                                <span id="estFlashPct" style="color:var(--dim);">0% of selected card</span>
+                            </div>
                         </div>
-
-                        <div class="opt-check-row" style="display:none;">
-                            <input type="checkbox" id="optRestructure">
-                            <label for="optRestructure">Auto-split into Banks of 16 <small>(maps 128 GM presets → Bank 0-7, Presets 0-15)</small></label>
-                        </div>
-
-                        <button class="btn btn-primary" id="btnOptimize" style="margin-top:4px; background: linear-gradient(135deg, var(--accent) 0%, #d97706 100%); color: var(--bg); border: none; font-weight: 700;">
-                            ⚙ Optimize SoundFont
-                        </button>
-
-                        <div id="optimizationSummary" style="font-size:0.85rem;color:var(--green);display:none;padding:10px;border-radius:6px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);font-family:'JetBrains Mono',monospace;font-weight:500;line-height:1.6;"></div>
-                    </div>
-
-                    <div class="progress-container" id="progressContainer">
-                        <div class="progress-header">
-                            <span id="progressStatus">Ready</span>
-                            <span id="progressPercent">0%</span>
-                        </div>
-                        <div class="progress-bar">
-                            <div class="progress-fill" id="progressFill"></div>
-                        </div>
-                    </div>
-
-                    <div class="actions">
-                        <button class="btn btn-primary" id="btnFlash" disabled>⚡ Flash to Device</button>
-                        <button class="btn" id="btnDownload" disabled>↓ Export Combined UF2</button>
                     </div>
                 </div>
             </div>
@@ -805,25 +337,38 @@
         <div class="card full-width combined-midi-card" style="display: grid; grid-template-columns: 1fr 1.2fr; gap: 24px; align-items: start;">
             <!-- Left Column: Upload -->
             <div style="display: flex; flex-direction: column;">
-                <h2>MIDI Files Loader</h2>
-                <div class="drop-zone" id="midiDropZone">
-                    <h3>Drop MIDI files here</h3>
-                    <p>Or click to select .mid files from your computer</p>
-                    <p style="margin-top: 8px; color: var(--accent); font-weight: 500;">Up to 15 MIDI files (Max 500KB total)</p>
-                    <input type="file" id="midiFileInput" accept=".mid,.midi" multiple style="display: none;">
+                <h2>MIDI Disk Drive</h2>
+                <div class="floppy-drive-container">
+                    <div class="floppy-bezel">
+                        <div class="drop-zone" id="midiDropZone">
+                            <h3>3.5" FLOPPY DISK DRIVE</h3>
+                            <p>INSERT MIDI DISK / DROP .MID FILES HERE</p>
+                            <p style="margin-top: 8px; color: var(--accent); font-weight: 500;">Up to 15 MIDI files (Max 500KB total)</p>
+                            <input type="file" id="midiFileInput" accept=".mid,.midi" multiple style="display: none;">
+                        </div>
+                    </div>
+                    <div class="floppy-controls">
+                        <div class="floppy-status-led">
+                            <div class="led-dot amber" id="midiLed"></div>
+                            <span>DISK ACCESS</span>
+                        </div>
+                        <button class="floppy-eject-btn" type="button" onclick="document.getElementById('midiFileInput').click()">⏏ INSERT/EJECT</button>
+                    </div>
                 </div>
             </div>
             <!-- Right Column: List & Details -->
             <div style="display: flex; flex-direction: column; border-left: 1px solid var(--border); padding-left: 24px; min-height: 160px; height: 100%; justify-content: flex-start;">
                 <h2 style="visibility: hidden; margin-bottom: 20px; border-bottom: 1px solid var(--accent-dim); padding-bottom: 8px;">MIDI File List</h2>
                 <div class="sf2-details" id="midiDetails" style="display: none; flex-direction: column; gap: 10px; margin-top: 0; width: 100%;">
-                    <div class="detail-row">
-                        <span class="detail-label">MIDI Files Count</span>
-                        <span class="detail-value" id="midiCount">0</span>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label">Total MIDI Size</span>
-                        <span class="detail-value" id="midiTotalSize">0 KB</span>
+                    <div class="lcd-readout-screen">
+                        <div class="detail-row">
+                            <span class="detail-label">MIDI Files Count</span>
+                            <span class="detail-value" id="midiCount">0</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Total MIDI Size</span>
+                            <span class="detail-value" id="midiTotalSize">0 KB</span>
+                        </div>
                     </div>
                     <div class="list-container" id="midiListContainer" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 5px; background: rgba(0,0,0,0.2); width: 100%;">
                         <!-- Uploaded MIDI files will be listed here -->
@@ -835,32 +380,154 @@
             </div>
         </div>
 
+        <!-- MIDI PLAYER & TIMELINE PANEL -->
+        <div class="card full-width" id="midiTimelineCard" style="margin-top: 24px; display: none; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <h2 style="margin: 0; display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 1.4rem;">🎛️</span> MIDI Timeline Player
+                    </h2>
+                    <span id="timelineSelectedFileName" style="font-family: 'Share Tech Mono', monospace; font-size: 0.9rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; color: var(--accent);">No File Selected</span>
+                </div>
+                <!-- Timeline Controls -->
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <!-- Time Display screen -->
+                    <div class="lcd-readout-screen" style="padding: 6px 12px; min-width: 140px; text-align: center; font-family: 'Share Tech Mono', monospace; font-size: 1rem; border-radius: 4px; margin: 0; background: #000; color: var(--lcd-text); border: 1px solid #1a2520;">
+                        <span id="timelineTimeLabel">00:00.00 / 00:00.00</span>
+                    </div>
+                    <!-- Control buttons -->
+                    <div style="display: flex; gap: 6px;">
+                        <button class="btn" id="timelinePlayBtn" title="Play / Pause" style="min-width: unset; flex: none; padding: 6px 12px; font-weight: bold; margin: 0;">▶ PLAY</button>
+                        <button class="btn" id="timelineStopBtn" title="Stop & Rewind" style="min-width: unset; flex: none; padding: 6px 12px; font-weight: bold; margin: 0;">■ STOP</button>
+                        <button class="btn" id="timelineLoopBtn" title="Toggle Loop" style="min-width: unset; flex: none; padding: 6px 12px; font-weight: bold; margin: 0;">🔁 LOOP: OFF</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Polyphony Warning / Info Banner -->
+            <div id="timelinePolyphonyWarning" style="display: none; align-items: center; gap: 8px; margin-bottom: 12px; padding: 8px 12px; border-radius: 4px; font-size: 0.8rem; font-family: monospace; border: 1px solid transparent; transition: all 0.3s ease;">
+                <span id="timelinePolyphonyIcon">⚠️</span>
+                <span id="timelinePolyphonyWarningText"></span>
+            </div>
+
+            <!-- Tracks Timeline outer -->
+            <div style="overflow-x: auto; width: 100%; border: 1px solid var(--border); border-radius: 6px; background: rgba(0,0,0,0.15);" class="timeline-tracks-outer">
+                <div style="min-width: 800px; display: flex; flex-direction: column; width: 100%;">
+                    <!-- Timeline Ruler Row -->
+                    <div style="display: flex; align-items: center; border-bottom: 1px solid var(--border); background: rgba(0,0,0,0.25);">
+                        <div style="width: 150px; padding: 6px 10px; border-right: 1px solid var(--border); font-size: 0.68rem; font-weight: bold; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Tracks</div>
+                        <div style="width: 70px; padding: 6px 10px; border-right: 1px solid var(--border); font-size: 0.68rem; font-weight: bold; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;">Channel</div>
+                        <div style="width: 255px; padding: 6px 10px; border-right: 1px solid var(--border); font-size: 0.68rem; font-weight: bold; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Routing / Preset</div>
+                        <div id="timelineRuler" style="flex-grow: 1; height: 28px; position: relative; cursor: pointer; user-select: none;">
+                            <div id="timelineRulerLabels" style="position: absolute; inset: 0; display: flex; justify-content: space-between; font-size: 0.72rem; font-family: 'Share Tech Mono', monospace; color: var(--dim); padding: 5px 10px; pointer-events: none;">
+                                <!-- Will populate tick marks dynamically -->
+                            </div>
+                            <div id="timelineRulerProgress" style="position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: rgba(255, 144, 0, 0.12); border-right: 2px solid var(--accent); pointer-events: none;"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Track List Container -->
+                    <div style="position: relative;" id="timelineTracksContainerOuter">
+                        <div id="timelineTracksContainer">
+                            <!-- Dynamic track rows go here -->
+                        </div>
+                        <!-- Vertical Playhead Line -->
+                        <div id="timelinePlayhead" style="position: absolute; top: 0; bottom: 0; width: 2px; background: var(--red); box-shadow: 0 0 6px var(--red); pointer-events: none; z-index: 10; display: none;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- MIDI PERFORMANCE ROUTING & SETTINGS -->
         <div class="card full-width" id="midiConfigCard" style="margin-top: 24px;">
-            <h2>MIDI Channel Routing & Performance Settings</h2>
-            <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--border);">
-                <span style="font-weight: 600; color: var(--accent);">Output Configuration:</span>
-                <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text);">
-                    <input type="radio" name="midiStereoMode" value="0" checked style="accent-color: var(--accent);"> Stereo Output (Audio 1/2 as L/R)
-                </label>
-                <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text); margin-left: 15px;">
-                    <input type="radio" name="midiStereoMode" value="1" style="accent-color: var(--accent);"> Dual Mono (Audio 1 = Synth + FX, Audio 2 = Drums / Synth 2)
-                </label>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+                <h2 style="margin: 0; display: flex; align-items: center; gap: 8px;">
+                    <span>🎹</span> MIDI Channel Routing & Performance Settings
+                </h2>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <span id="activeRoutingModeLabel" style="font-family: 'Share Tech Mono', monospace; font-size: 0.8rem; background: rgba(0,255,136,0.08); border: 1px solid rgba(0,255,136,0.25); padding: 4px 8px; border-radius: 4px; color: #00ff88;">NORMAL MODE ROUTING</span>
+                    <button class="btn" id="btnEditNormalRouting" style="display: none; min-width: unset; padding: 4px 10px; font-size: 0.75rem; font-weight: bold; margin: 0;">◀ EDIT NORMAL ROUTING</button>
+                </div>
+            </div>
+            <div style="display: flex; gap: 30px; align-items: center; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-weight: 600; color: var(--accent);">Output Configuration:</span>
+                    <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text);">
+                        <input type="radio" name="midiStereoMode" value="0" checked style="accent-color: var(--accent);"> Stereo
+                    </label>
+                    <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text); margin-left: 10px;">
+                        <input type="radio" name="midiStereoMode" value="1" style="accent-color: var(--accent);"> Dual Mono
+                    </label>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-weight: 600; color: var(--accent);">CV1 Mode:</span>
+                    <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text);">
+                        <input type="radio" name="midiCv1Mode" value="0" checked style="accent-color: var(--accent);"> Gate
+                    </label>
+                    <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text); margin-left: 10px;">
+                        <input type="radio" name="midiCv1Mode" value="1" style="accent-color: var(--accent);"> Trigger
+                    </label>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-weight: 600; color: var(--accent);">CV2 Mode:</span>
+                    <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text);">
+                        <input type="radio" name="midiCv2Mode" value="0" checked style="accent-color: var(--accent);"> Gate
+                    </label>
+                    <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text); margin-left: 10px;">
+                        <input type="radio" name="midiCv2Mode" value="1" style="accent-color: var(--accent);"> Trigger
+                    </label>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-weight: 600; color: var(--accent);">Loop Mode:</span>
+                    <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text);">
+                        <input type="radio" name="midiLoopMode" value="0" checked style="accent-color: var(--accent);"> Loop
+                    </label>
+                    <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text); margin-left: 10px;">
+                        <input type="radio" name="midiLoopMode" value="1" style="accent-color: var(--accent);"> Play Once &amp; Advance
+                    </label>
+                </div>
+            </div>
+
+            <!-- Custom MIDI CC Mapping -->
+            <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap;">
+                <span style="font-weight: 600; color: var(--accent);">MIDI CC Modulation Mapping:</span>
+                <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <label style="font-size: 0.8rem; color: var(--text);">Cutoff:</label>
+                        <input type="number" min="0" max="127" value="74" class="mini-select" id="ccMapCutoff" style="width: 55px; text-align: center; padding: 2px 4px;">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <label style="font-size: 0.8rem; color: var(--text);">Reverb Mix:</label>
+                        <input type="number" min="0" max="127" value="39" class="mini-select" id="ccMapReverb" style="width: 55px; text-align: center; padding: 2px 4px;">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <label style="font-size: 0.8rem; color: var(--text);">Glitch Mangle:</label>
+                        <input type="number" min="0" max="127" value="71" class="mini-select" id="ccMapGlitch" style="width: 55px; text-align: center; padding: 2px 4px;">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <label style="font-size: 0.8rem; color: var(--text);">Attack:</label>
+                        <input type="number" min="0" max="127" value="36" class="mini-select" id="ccMapAttack" style="width: 55px; text-align: center; padding: 2px 4px;">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <label style="font-size: 0.8rem; color: var(--text);">Decay/Release:</label>
+                        <input type="number" min="0" max="127" value="37" class="mini-select" id="ccMapDecay" style="width: 55px; text-align: center; padding: 2px 4px;">
+                    </div>
+                </div>
             </div>
             
-            <div style="overflow-x: auto; width: 100%;">
-                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem;">
-                    <thead>
-                        <tr style="border-bottom: 1px solid var(--border); color: var(--accent); text-transform: uppercase; font-size: 0.8rem; font-weight: 600;">
-                            <th style="padding: 10px 15px;">MIDI Channel</th>
-                            <th style="padding: 10px 15px;">Target Routing</th>
-                            <th style="padding: 10px 15px;">SoundFont Preset Override</th>
-                        </tr>
-                    </thead>
-                    <tbody id="midiRoutingTableBody">
-                        <!-- 16 channels populated dynamically by JS -->
-                    </tbody>
-                </table>
+            <!-- 16-Pad Channel Grid -->
+            <div class="midi-routing-grid" id="midiRoutingGrid">
+                <!-- 16 pads generated dynamically by JS -->
+            </div>
+            
+            <!-- Channel Edit Strip -->
+            <div class="midi-channel-edit-strip" id="midiChannelEditStrip">
+                <!-- Selected channel controls populated dynamically by JS -->
+            </div>
+
+            <!-- Hidden backing container for backward compatibility -->
+            <div id="midiHiddenSelects" style="display: none;">
+                <!-- 16 hidden selectors created dynamically by JS -->
             </div>
         </div>
     </div>
@@ -955,10 +622,119 @@
         let decodedBuffers = {};         // sampleID -> AudioBuffer
         let parsedPresetZones = {};      // presetIdx -> Array of zone objects
         let activeVoices = {};           // midi -> Array of { source, gainNode }
+        const channelNoteCounts = new Array(16).fill(0);
         let midiInputPort = null;
+
+        const normalModeTargets = [2, 3, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        const normalModeOverrides = new Array(16).fill(-1);
+        const normalModeVolumeTrims = new Array(16).fill(0);
+        const customCcMappings = [74, 39, 71, 36, 37]; // 0=Cutoff, 1=ReverbMix, 2=GlitchMangle, 3=Attack, 4=Decay/Release
+        let normalModeStereoMode = 0;
+        let normalModeCv1Mode = 0; // 0 = Gate, 1 = Trigger
+        let normalModeCv2Mode = 0; // 0 = Gate, 1 = Trigger
+        let normalModeLoopMode = 0; // 0 = Loop, 1 = Play Once & Advance
+        let optimizedSf2Buffer = null;         // cached post-optimization SF2
+        let sf2OptimizationInProgress = false;
+        const STORAGE_KEY = 'rompler_state_v1';
+
+        function truncateInstrumentName(name, maxLen = 22) {
+            if (!name) return '';
+            if (name.length <= maxLen) return name;
+            return name.substring(0, maxLen - 3) + '...';
+        }
         const FLASH_BASE_ADDRESS = 0x10000000;
         const SOUNDFONT_FLASH_OFFSET = 0x00100000;
         const SOUNDFONT_FLASH_ADDRESS = FLASH_BASE_ADDRESS + SOUNDFONT_FLASH_OFFSET;
+
+        // ─── localStorage Persistence ─────────────────────────────────────────────
+        function saveState() {
+            if (!window.localStorage) return;
+            try {
+                const state = {
+                    normalModeTargets: [...normalModeTargets],
+                    normalModeOverrides: [...normalModeOverrides],
+                    normalModeVolumeTrims: [...normalModeVolumeTrims],
+                    customCcMappings: [...customCcMappings],
+                    normalModeStereoMode, normalModeCv1Mode, normalModeCv2Mode, normalModeLoopMode,
+                    flashMode: flashMode ? flashMode.value : '2097152',
+                    optSampleRate: optSampleRate ? optSampleRate.value : '22050',
+                    optMono: optMono ? optMono.checked : true,
+                    midiFiles: uploadedMidiFiles.map(f => ({
+                        name: f.name,
+                        channelTargets:  f.channelTargets  ? [...f.channelTargets]  : null,
+                        channelOverrides: f.channelOverrides ? [...f.channelOverrides] : null,
+                        channelVolumeTrims: f.channelVolumeTrims ? [...f.channelVolumeTrims] : null,
+                        stereoMode: f.stereoMode, cv1Mode: f.cv1Mode,
+                        cv2Mode: f.cv2Mode, loopMode: f.loopMode,
+                        activeChannels: f.activeChannels || [],
+                    })),
+                };
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+            } catch(e) { /* storage full or private mode */ }
+        }
+
+        function loadState() {
+            if (!window.localStorage) return;
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (!raw) return;
+                const s = JSON.parse(raw);
+                if (s.normalModeTargets && s.normalModeTargets.length === 16)
+                    s.normalModeTargets.forEach((v, i) => normalModeTargets[i] = v);
+                if (s.normalModeOverrides && s.normalModeOverrides.length === 16)
+                    s.normalModeOverrides.forEach((v, i) => normalModeOverrides[i] = v);
+                if (s.normalModeVolumeTrims && s.normalModeVolumeTrims.length === 16)
+                    s.normalModeVolumeTrims.forEach((v, i) => normalModeVolumeTrims[i] = v);
+                if (s.customCcMappings && s.customCcMappings.length === 5)
+                    s.customCcMappings.forEach((v, i) => customCcMappings[i] = v);
+                if (s.normalModeStereoMode !== undefined) normalModeStereoMode = s.normalModeStereoMode;
+                if (s.normalModeCv1Mode    !== undefined) normalModeCv1Mode    = s.normalModeCv1Mode;
+                if (s.normalModeCv2Mode    !== undefined) normalModeCv2Mode    = s.normalModeCv2Mode;
+                if (s.normalModeLoopMode   !== undefined) normalModeLoopMode   = s.normalModeLoopMode;
+                if (s.flashMode    && flashMode)    flashMode.value    = s.flashMode;
+                if (s.optSampleRate && optSampleRate) optSampleRate.value = s.optSampleRate;
+                if (s.optMono !== undefined && optMono) optMono.checked = s.optMono;
+                if (s.midiFiles && Array.isArray(s.midiFiles)) {
+                    uploadedMidiFiles = s.midiFiles.map(f => ({
+                        ...f,
+                        channelVolumeTrims: f.channelVolumeTrims && f.channelVolumeTrims.length === 16 ? [...f.channelVolumeTrims] : new Array(16).fill(0),
+                        data: null,       // binary not stored; requires re-upload
+                        offline: true,
+                        trackChannelOverrides: {},
+                    }));
+                }
+            } catch(e) { /* corrupted storage */ }
+        }
+
+        function resetState() {
+            if (window.localStorage) localStorage.removeItem(STORAGE_KEY);
+            location.reload();
+        }
+
+        // ─── SF2 Background Optimization ─────────────────────────────────────────
+        async function runSf2Optimization() {
+            if (!activeSf2Buffer) return;
+            sf2OptimizationInProgress = true;
+            optimizedSf2Buffer = null;
+            updateFlashUsage();
+            await new Promise(r => setTimeout(r, 0)); // yield to browser for one frame
+            try {
+                const targetRate = parseInt(optSampleRate.value);
+                const convertToMono = optMono.checked;
+                const restructure = optRestructure ? optRestructure.checked : false;
+                if (convertToMono || targetRate > 0) {
+                    optimizedSf2Buffer = optimizeSF2(activeSf2Buffer, targetRate, convertToMono, restructure);
+                } else {
+                    optimizedSf2Buffer = activeSf2Buffer;
+                }
+            } catch(err) {
+                console.error('SF2 optimization failed:', err);
+                optimizedSf2Buffer = activeSf2Buffer;
+                showToast('Optimization failed; using original SF2', 'warning');
+            }
+            sf2OptimizationInProgress = false;
+            updateFlashUsage();
+        }
 
         // ─── DOM ─────────────────────────────────────────────────────────────────
         const dropZone = document.getElementById('dropZone');
@@ -974,7 +750,9 @@
         const listContainer = document.getElementById('listContainer');
         const tabPresets = document.getElementById('tabPresets');
         const tabSamples = document.getElementById('tabSamples');
-        const btnFlash = document.getElementById('btnFlash');
+        const btnFlashAll = document.getElementById('btnFlashAll');
+        const btnFlashMidi = document.getElementById('btnFlashMidi');
+        const btnFlashSf2 = document.getElementById('btnFlashSf2');
         const btnDownload = document.getElementById('btnDownload');
         const progressContainer = document.getElementById('progressContainer');
         const progressStatus = document.getElementById('progressStatus');
@@ -986,8 +764,6 @@
         const optSampleRate = document.getElementById('optSampleRate');
         const optMono = document.getElementById('optMono');
         const optRestructure = document.getElementById('optRestructure');
-        const btnOptimize = document.getElementById('btnOptimize');
-        const optimizationSummary = document.getElementById('optimizationSummary');
         const estBarWrap = document.getElementById('estBarWrap');
         const estSizeLabel = document.getElementById('estSizeLabel');
         const estBarFill = document.getElementById('estBarFill');
@@ -1023,40 +799,83 @@
             const capacity = selectedSoundFontCapacity();
             flashUsageLabel.textContent = `Flash Usage (of ${formatBytes(capacity)} SF2 area)`;
 
-            const totalMidiSize = uploadedMidiFiles.reduce((acc, f) => acc + f.data.byteLength, 0);
+            // Count only files that have binary data (exclude offline/metadata-only entries)
+            const totalMidiSize = uploadedMidiFiles.reduce((acc, f) => acc + (f.data ? f.data.byteLength : 0), 0);
+            const onlineMidiCount = uploadedMidiFiles.filter(f => f.data).length;
             const midiCapacity = 512000; // 500KB
-            const midiFits = totalMidiSize <= midiCapacity && uploadedMidiFiles.length <= 15;
+            const midiFits = totalMidiSize <= midiCapacity && onlineMidiCount <= 15;
+
+            const usbSupported = !!navigator.usb;
+            const usbTitle = usbSupported ? '' : 'WebUSB not supported (use Chrome/Edge)';
+
+            if (btnFlashMidi) {
+                btnFlashMidi.disabled = !usbSupported || !midiFits;
+                btnFlashMidi.title = usbSupported 
+                    ? (midiFits ? 'Flash ONLY MIDI routing/configuration blocks (Instant!)' : `MIDI files exceed limits (Max 15 files, Max 500KB total. Current: ${onlineMidiCount} files, ${formatBytes(totalMidiSize)}).`) 
+                    : usbTitle;
+            }
 
             if (!activeSf2Buffer) {
-                flashUsage.textContent = '-';
-                flashUsage.classList.remove('warning', 'ok');
-                btnFlash.disabled = true;
-                btnDownload.disabled = true;
+                flashUsage.textContent = 'No SoundFont Loaded (Flashing Firmware & MIDI Container)';
+                flashUsage.classList.remove('warning');
+                flashUsage.classList.add('ok');
+
+                if (btnFlashAll) {
+                    btnFlashAll.disabled = !usbSupported || !midiFits;
+                    btnFlashAll.title = usbSupported 
+                        ? (midiFits ? 'Flash Firmware and MIDI routing/configuration blocks' : `MIDI files exceed limits (Max 15 files, Max 500KB total. Current: ${onlineMidiCount} files, ${formatBytes(totalMidiSize)}).`) 
+                        : usbTitle;
+                }
+                if (btnFlashSf2) {
+                    btnFlashSf2.disabled = true;
+                    btnFlashSf2.title = 'Please load a SoundFont first';
+                }
+                btnDownload.disabled = !midiFits;
+                btnDownload.title = midiFits ? '' : 'MIDI files exceed limits';
                 return;
             }
 
-            const fits = activeSf2Buffer.byteLength <= capacity;
-            const usagePct = (activeSf2Buffer.byteLength / capacity * 100).toFixed(1);
-            const totalFits = fits && midiFits;
+            if (sf2OptimizationInProgress) {
+                flashUsage.textContent = 'Optimizing SoundFont…';
+                flashUsage.classList.remove('warning', 'ok');
+                if (btnFlashAll) {
+                    btnFlashAll.disabled = true;
+                    btnFlashAll.title = 'Optimizing SoundFont, please wait…';
+                }
+                if (btnFlashSf2) {
+                    btnFlashSf2.disabled = true;
+                    btnFlashSf2.title = 'Optimizing SoundFont, please wait…';
+                }
+                btnDownload.disabled = true;
+                btnDownload.title = 'Optimizing SoundFont, please wait…';
+                return;
+            }
+
+            const sf2Size = (optimizedSf2Buffer || activeSf2Buffer).byteLength;
+            const sf2Fits = sf2Size <= capacity;
+            const usagePct = (sf2Size / capacity * 100).toFixed(1);
+            const totalFits = sf2Fits && midiFits;
 
             flashUsage.textContent = `${usagePct}% used`;
             flashUsage.classList.toggle('warning', !totalFits);
             flashUsage.classList.toggle('ok', totalFits);
-            btnFlash.disabled = !totalFits;
-            btnDownload.disabled = !totalFits;
 
-            if (!fits) {
-                const message = `Current SoundFont is ${formatBytes(activeSf2Buffer.byteLength)}; selected card holds ${formatBytes(capacity)} after firmware.`;
-                btnFlash.title = message;
-                btnDownload.title = message;
-            } else if (!midiFits) {
-                const message = `MIDI files exceed limits (Max 15 files, Max 500KB total. Current: ${uploadedMidiFiles.length} files, ${formatBytes(totalMidiSize)}).`;
-                btnFlash.title = message;
-                btnDownload.title = message;
-            } else {
-                btnFlash.title = navigator.usb ? '' : 'WebUSB not supported (use Chrome/Edge)';
-                btnDownload.title = '';
+            if (btnFlashAll) {
+                btnFlashAll.disabled = !usbSupported || !totalFits;
+                btnFlashAll.title = usbSupported 
+                    ? (totalFits ? 'Flash everything (Firmware, MIDI, and SoundFont)' : (!sf2Fits ? `SoundFont is ${formatBytes(sf2Size)}; selected card holds ${formatBytes(capacity)}.` : 'MIDI files exceed limits.')) 
+                    : usbTitle;
             }
+
+            if (btnFlashSf2) {
+                btnFlashSf2.disabled = !usbSupported || !sf2Fits;
+                btnFlashSf2.title = usbSupported 
+                    ? (sf2Fits ? 'Flash ONLY SoundFont blocks' : `SoundFont is ${formatBytes(sf2Size)}; selected card holds ${formatBytes(capacity)}.`) 
+                    : usbTitle;
+            }
+
+            btnDownload.disabled = !totalFits;
+            btnDownload.title = totalFits ? '' : 'SoundFont or MIDI files exceed capacity limits';
         }
 
         // ─── Toast ───────────────────────────────────────────────────────────────
@@ -1084,6 +903,8 @@
 
         // ─── Firmware fetch ───────────────────────────────────────────────────────
         document.addEventListener('DOMContentLoaded', async () => {
+            loadState();
+            
             try {
                 await Promise.all([
                     loadBaseFirmware(2097152, 'rompler.uf2'),
@@ -1099,13 +920,123 @@
                 statusText.textContent = 'WebUSB Available';
             } else {
                 statusText.textContent = 'WebUSB Unsupported';
-                btnFlash.title = 'WebUSB not supported (use Chrome/Edge)';
+                if (btnFlashAll) btnFlashAll.title = 'WebUSB not supported (use Chrome/Edge)';
+                if (btnFlashMidi) btnFlashMidi.title = 'WebUSB not supported (use Chrome/Edge)';
+                if (btnFlashSf2) btnFlashSf2.title = 'WebUSB not supported (use Chrome/Edge)';
             }
 
             initMIDI();
             createKeyboard();
+            renderMidiList();
             updateFlashUsage();
             renderMidiRoutingTable();
+
+            // Initialize Custom CC Mapping UI inputs
+            const ccInputCutoff = document.getElementById('ccMapCutoff');
+            const ccInputReverb = document.getElementById('ccMapReverb');
+            const ccInputGlitch = document.getElementById('ccMapGlitch');
+            const ccInputAttack = document.getElementById('ccMapAttack');
+            const ccInputDecay = document.getElementById('ccMapDecay');
+
+            if (ccInputCutoff) ccInputCutoff.value = customCcMappings[0];
+            if (ccInputReverb) ccInputReverb.value = customCcMappings[1];
+            if (ccInputGlitch) ccInputGlitch.value = customCcMappings[2];
+            if (ccInputAttack) ccInputAttack.value = customCcMappings[3];
+            if (ccInputDecay) ccInputDecay.value = customCcMappings[4];
+
+            const handleCcChange = () => {
+                if (ccInputCutoff) customCcMappings[0] = Math.max(0, Math.min(127, parseInt(ccInputCutoff.value) || 0));
+                if (ccInputReverb) customCcMappings[1] = Math.max(0, Math.min(127, parseInt(ccInputReverb.value) || 0));
+                if (ccInputGlitch) customCcMappings[2] = Math.max(0, Math.min(127, parseInt(ccInputGlitch.value) || 0));
+                if (ccInputAttack) customCcMappings[3] = Math.max(0, Math.min(127, parseInt(ccInputAttack.value) || 0));
+                if (ccInputDecay) customCcMappings[4] = Math.max(0, Math.min(127, parseInt(ccInputDecay.value) || 0));
+                saveState();
+            };
+
+            [ccInputCutoff, ccInputReverb, ccInputGlitch, ccInputAttack, ccInputDecay].forEach(input => {
+                if (input) input.addEventListener('change', handleCcChange);
+            });
+
+            const btnEditNormalRouting = document.getElementById('btnEditNormalRouting');
+            if (btnEditNormalRouting) {
+                btnEditNormalRouting.addEventListener('click', () => {
+                    localPanic();
+                    selectedMidiFileIdx = -1;
+                    const card = document.getElementById('midiTimelineCard');
+                    if (card) card.style.display = 'none';
+                    updateMidiListRowHighlight();
+                    renderMidiRoutingTable();
+                });
+            }
+
+            const btnResetState = document.getElementById('btnResetState');
+            if (btnResetState) {
+                btnResetState.addEventListener('click', () => {
+                    if (confirm('Are you sure you want to reset all MIDI routing and configuration settings?')) {
+                        resetState();
+                    }
+                });
+            }
+
+            document.querySelectorAll('input[name="midiStereoMode"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    const val = parseInt(radio.value, 10);
+                    if (selectedMidiFileIdx !== -1) {
+                        const file = uploadedMidiFiles[selectedMidiFileIdx];
+                        if (file) {
+                            file.stereoMode = val;
+                        }
+                    } else {
+                        normalModeStereoMode = val;
+                    }
+                    saveState();
+                });
+            });
+
+            document.querySelectorAll('input[name="midiCv1Mode"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    const val = parseInt(radio.value, 10);
+                    if (selectedMidiFileIdx !== -1) {
+                        const file = uploadedMidiFiles[selectedMidiFileIdx];
+                        if (file) {
+                            file.cv1Mode = val;
+                        }
+                    } else {
+                        normalModeCv1Mode = val;
+                    }
+                    saveState();
+                });
+            });
+
+            document.querySelectorAll('input[name="midiCv2Mode"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    const val = parseInt(radio.value, 10);
+                    if (selectedMidiFileIdx !== -1) {
+                        const file = uploadedMidiFiles[selectedMidiFileIdx];
+                        if (file) {
+                            file.cv2Mode = val;
+                        }
+                    } else {
+                        normalModeCv2Mode = val;
+                    }
+                    saveState();
+                });
+            });
+
+            document.querySelectorAll('input[name="midiLoopMode"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    const val = parseInt(radio.value, 10);
+                    if (selectedMidiFileIdx !== -1) {
+                        const file = uploadedMidiFiles[selectedMidiFileIdx];
+                        if (file) {
+                            file.loopMode = val;
+                        }
+                    } else {
+                        normalModeLoopMode = val;
+                    }
+                    saveState();
+                });
+            });
         });
 
         // ─── Drop Zone ───────────────────────────────────────────────────────────
@@ -1135,6 +1066,9 @@
         });
 
         async function handleMidiFiles(files) {
+            const midiLed = document.getElementById('midiLed');
+            if (midiLed) midiLed.classList.add('active');
+
             let added = false;
             for (const file of files) {
                 if (uploadedMidiFiles.length >= 15) {
@@ -1173,7 +1107,14 @@
                     uploadedMidiFiles.push({
                         name: cleanName,
                         data: buffer,
-                        activeChannels: activeChs
+                        activeChannels: activeChs,
+                        channelTargets: [...normalModeTargets],
+                        channelOverrides: [...normalModeOverrides],
+                        channelVolumeTrims: new Array(16).fill(0),
+                        stereoMode: normalModeStereoMode,
+                        cv1Mode: normalModeCv1Mode,
+                        cv2Mode: normalModeCv2Mode,
+                        loopMode: normalModeLoopMode
                     });
                     added = true;
                 } catch (e) {
@@ -1183,7 +1124,11 @@
             if (added) {
                 renderMidiList();
                 updateFlashUsage();
+                saveState();
             }
+            setTimeout(() => {
+                if (midiLed) midiLed.classList.remove('active');
+            }, 600);
         }
 
         function getActiveMidiChannels(arrayBuffer) {
@@ -1281,11 +1226,15 @@
             
             let totalBytes = 0;
             uploadedMidiFiles.forEach((file, idx) => {
-                totalBytes += file.data.byteLength;
+                totalBytes += file.data ? file.data.byteLength : 0;
                 
                 const row = document.createElement('div');
                 row.className = 'midi-file-row';
-                row.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; margin-bottom: 5px; background: rgba(255,255,255,0.03); border-radius: 4px; border: 1px solid var(--border);';
+                row.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; margin-bottom: 5px; background: rgba(255,255,255,0.03); border-radius: 4px; border: 1px solid var(--border); cursor: pointer;';
+                
+                row.addEventListener('click', () => {
+                    selectMidiFile(idx);
+                });
                 
                 // Play Button
                 const playBtn = document.createElement('button');
@@ -1298,12 +1247,9 @@
                     if (midiPlaybackPlaying && midiPlaybackLoadedFileIdx === idx) {
                         stopLocalMidiPlayback();
                     } else {
-                        try {
-                            const events = parseMidiFile(file.data);
-                            startLocalMidiPlayback(events, idx);
-                        } catch (err) {
-                            showToast('Error playing MIDI: ' + err.message, 'error');
-                        }
+                        selectMidiFile(idx);
+                        const playTimelineBtn = document.getElementById('timelinePlayBtn');
+                        if (playTimelineBtn) playTimelineBtn.click();
                     }
                 });
 
@@ -1325,7 +1271,7 @@
                 
                 const size = document.createElement('span');
                 size.style.cssText = 'font-size: 0.75rem; color: var(--dim); margin-left: auto; margin-right: 15px;';
-                size.textContent = formatBytes(file.data.byteLength);
+                size.textContent = file.data ? formatBytes(file.data.byteLength) : 'Offline (Re-upload)';
                 
                 const deleteBtn = document.createElement('button');
                 deleteBtn.style.cssText = 'background: none; border: none; color: var(--red); cursor: pointer; font-size: 1.2rem; line-height: 1; padding: 0 5px;';
@@ -1336,8 +1282,18 @@
                         stopLocalMidiPlayback();
                     }
                     uploadedMidiFiles.splice(idx, 1);
+                    if (selectedMidiFileIdx === idx) {
+                        selectedMidiFileIdx = -1;
+                        selectedMidiData = null;
+                        selectedMidiDurationMs = 0;
+                        const card = document.getElementById('midiTimelineCard');
+                        if (card) card.style.display = 'none';
+                    } else if (selectedMidiFileIdx > idx) {
+                        selectedMidiFileIdx--;
+                    }
                     renderMidiList();
                     updateFlashUsage();
+                    saveState();
                 });
                 
                 row.appendChild(playBtn);
@@ -1358,81 +1314,262 @@
             if (typeof updateMidiPlayUI === 'function') {
                 updateMidiPlayUI();
             }
+            if (selectedMidiFileIdx !== -1) {
+                updateMidiListRowHighlight();
+            }
         }
 
+        let selectedRoutingChannelIdx = 0; // Global state for MIDI channel pad editor
+
         function renderMidiRoutingTable() {
-            const tableBody = document.getElementById('midiRoutingTableBody');
-            if (!tableBody) return;
+            const gridContainer = document.getElementById('midiRoutingGrid');
+            const editStrip = document.getElementById('midiChannelEditStrip');
+            const hiddenContainer = document.getElementById('midiHiddenSelects');
+            if (!gridContainer || !editStrip || !hiddenContainer) return;
 
-            // Save currently selected values if table is already populated
-            const currentTargets = [];
-            const currentOverrides = [];
-            for (let i = 0; i < 16; i++) {
-                const targetSelect = document.getElementById(`midiTargetCh${i + 1}`);
-                if (targetSelect) {
-                    currentTargets[i] = parseInt(targetSelect.value);
-                } else {
-                    // Default values
-                    if (i === 0) currentTargets[i] = 2; // CV/Gate 1
-                    else if (i === 1) currentTargets[i] = 3; // CV/Gate 2
-                    else if (i === 9) currentTargets[i] = 1; // Drums
-                    else currentTargets[i] = 0; // Synth 1
+            const labelEl = document.getElementById('activeRoutingModeLabel');
+            const editBtnEl = document.getElementById('btnEditNormalRouting');
+            if (selectedMidiFileIdx === -1) {
+                if (labelEl) {
+                    labelEl.textContent = 'NORMAL MODE ROUTING';
+                    labelEl.style.background = 'rgba(0, 255, 136, 0.08)';
+                    labelEl.style.borderColor = 'rgba(0, 255, 136, 0.25)';
+                    labelEl.style.color = '#00ff88';
                 }
-
-                const overrideSelect = document.getElementById(`midiOverrideCh${i + 1}`);
-                if (overrideSelect) {
-                    currentOverrides[i] = parseInt(overrideSelect.value);
-                } else {
-                    currentOverrides[i] = -1; // No override
+                if (editBtnEl) editBtnEl.style.display = 'none';
+            } else {
+                const file = uploadedMidiFiles[selectedMidiFileIdx];
+                const truncatedName = file ? truncateInstrumentName(file.name, 18) : '';
+                if (labelEl) {
+                    labelEl.textContent = `MIDI ROUTING: ${truncatedName}`;
+                    labelEl.style.background = 'rgba(255, 170, 0, 0.08)';
+                    labelEl.style.borderColor = 'rgba(255, 170, 0, 0.25)';
+                    labelEl.style.color = '#ffaa00';
                 }
+                if (editBtnEl) editBtnEl.style.display = 'inline-block';
             }
 
-            tableBody.innerHTML = '';
+            // Sync the Output Configuration (stereo/dual mono) radio buttons
+            const activeStereoMode = selectedMidiFileIdx !== -1 
+                ? (uploadedMidiFiles[selectedMidiFileIdx] && uploadedMidiFiles[selectedMidiFileIdx].stereoMode !== undefined ? uploadedMidiFiles[selectedMidiFileIdx].stereoMode : 0)
+                : normalModeStereoMode;
+            
+            document.querySelectorAll('input[name="midiStereoMode"]').forEach(radio => {
+                radio.checked = (parseInt(radio.value, 10) === activeStereoMode);
+            });
+
+            // Sync the CV1 and CV2 Gate/Trigger Mode radio buttons
+            const activeCv1Mode = selectedMidiFileIdx !== -1 
+                ? (uploadedMidiFiles[selectedMidiFileIdx] && uploadedMidiFiles[selectedMidiFileIdx].cv1Mode !== undefined ? uploadedMidiFiles[selectedMidiFileIdx].cv1Mode : 0)
+                : normalModeCv1Mode;
+            
+            document.querySelectorAll('input[name="midiCv1Mode"]').forEach(radio => {
+                radio.checked = (parseInt(radio.value, 10) === activeCv1Mode);
+            });
+
+            const activeCv2Mode = selectedMidiFileIdx !== -1 
+                ? (uploadedMidiFiles[selectedMidiFileIdx] && uploadedMidiFiles[selectedMidiFileIdx].cv2Mode !== undefined ? uploadedMidiFiles[selectedMidiFileIdx].cv2Mode : 0)
+                : normalModeCv2Mode;
+            
+            document.querySelectorAll('input[name="midiCv2Mode"]').forEach(radio => {
+                radio.checked = (parseInt(radio.value, 10) === activeCv2Mode);
+            });
+
+            const activeLoopMode = selectedMidiFileIdx !== -1
+                ? (uploadedMidiFiles[selectedMidiFileIdx] && uploadedMidiFiles[selectedMidiFileIdx].loopMode !== undefined ? uploadedMidiFiles[selectedMidiFileIdx].loopMode : 0)
+                : normalModeLoopMode;
+
+            document.querySelectorAll('input[name="midiLoopMode"]').forEach(radio => {
+                radio.checked = (parseInt(radio.value, 10) === activeLoopMode);
+            });
 
             const hasPresets = parsedData && parsedData.presets && parsedData.presets.length > 0;
 
+            const file = selectedMidiFileIdx !== -1 ? uploadedMidiFiles[selectedMidiFileIdx] : null;
+            const currentTargets = [];
+            const currentOverrides = [];
             for (let i = 0; i < 16; i++) {
-                const row = document.createElement('tr');
-                row.style.borderBottom = '1px solid var(--border)';
+                if (file) {
+                    if (!file.channelTargets) {
+                        file.channelTargets = [...normalModeTargets];
+                        file.channelOverrides = [...normalModeOverrides];
+                    }
+                    currentTargets[i] = file.channelTargets[i];
+                    currentOverrides[i] = file.channelOverrides[i];
+                } else {
+                    currentTargets[i] = normalModeTargets[i];
+                    currentOverrides[i] = normalModeOverrides[i];
+                }
+            }
+
+            // 1. Rebuild the hidden select inputs for backwards-compatibility (0..6)
+            hiddenContainer.innerHTML = '';
+            for (let i = 0; i < 16; i++) {
+                const hsTarget = document.createElement('select');
+                hsTarget.id = `midiTargetCh${i + 1}`;
+                hsTarget.innerHTML = `
+                    <option value="0">0</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                    <option value="6">6</option>
+                `;
+                hsTarget.value = currentTargets[i];
+                hsTarget.addEventListener('change', () => {
+                    const badge = document.getElementById(`midiPadBadgeCh${i + 1}`);
+                    if (badge) {
+                        badge.textContent = getTargetAbbrev(parseInt(hsTarget.value));
+                    }
+                    if (selectedRoutingChannelIdx === i) {
+                        updateEditStrip();
+                    }
+                });
+                hiddenContainer.appendChild(hsTarget);
+
+                const hsOverride = document.createElement('select');
+                hsOverride.id = `midiOverrideCh${i + 1}`;
+                let hsOverrideHtml = `<option value="-1">-1</option>`;
+                if (hasPresets) {
+                    parsedData.presets.forEach((_, idx) => {
+                        hsOverrideHtml += `<option value="${idx}">${idx}</option>`;
+                    });
+                }
+                hsOverride.innerHTML = hsOverrideHtml;
+                hsOverride.value = currentOverrides[i];
+                hsOverride.addEventListener('change', () => {
+                    const presetLabel = document.querySelector(`#midiChannelPadCh${i + 1} .midi-pad-preset-label`);
+                    if (presetLabel) {
+                        let presetName = 'No Preset';
+                        let isDefault = false;
+                        let pIdx = parseInt(hsOverride.value);
+                        if (pIdx === -1) {
+                            pIdx = getDefaultPresetIndexForChannel(i);
+                            isDefault = true;
+                        }
+                        if (hasPresets && pIdx >= 0 && pIdx < parsedData.presets.length) {
+                            const p = parsedData.presets[pIdx];
+                            const truncatedName = truncateInstrumentName(p.name, 10);
+                            presetName = truncatedName + (isDefault ? ' (d)' : '');
+                            presetLabel.style.color = isDefault ? 'var(--dim)' : 'var(--accent)';
+                        }
+                        presetLabel.textContent = presetName;
+                        presetLabel.title = presetName;
+                    }
+                    if (selectedRoutingChannelIdx === i) {
+                        updateEditStrip();
+                    }
+                });
+                hiddenContainer.appendChild(hsOverride);
+            }
+
+            // Target routing abbreviation helper
+            function getTargetAbbrev(targetVal) {
+                switch(targetVal) {
+                    case 0: return 'S1';
+                    case 1: return 'S2';
+                    case 2: return 'CV1';
+                    case 3: return 'CV2';
+                    case 4: return 'Muted';
+                    case 5: return 'S1+CV1';
+                    case 6: return 'S2+CV2';
+                    default: return 'Muted';
+                }
+            }
+
+            // 2. Render the 16-Pad Grid
+            gridContainer.innerHTML = '';
+            for (let i = 0; i < 16; i++) {
+                const pad = document.createElement('div');
+                pad.className = `midi-channel-pad ${selectedRoutingChannelIdx === i ? 'selected' : ''}`;
+                pad.id = `midiChannelPadCh${i + 1}`;
                 
-                // Col 1: Channel number
-                const colCh = document.createElement('td');
-                colCh.style.padding = '10px 15px';
-                colCh.style.fontWeight = '500';
-                colCh.style.color = 'var(--text)';
-                colCh.textContent = `Channel ${i + 1}`;
-                if (i === 9) {
-                    colCh.innerHTML = `Channel 10 <span style="font-size:0.75rem; color:var(--accent); background:rgba(167,139,250,0.15); padding:2px 6px; border-radius:4px; margin-left:6px; font-weight:normal;">Drums Default</span>`;
+                const header = document.createElement('div');
+                header.className = 'midi-pad-header';
+                
+                const numLabel = document.createElement('span');
+                numLabel.className = 'midi-pad-number';
+                numLabel.textContent = (i + 1).toString().padStart(2, '0');
+                
+                const led = document.createElement('span');
+                led.className = 'channel-led led-dot green';
+                led.dataset.channel = i;
+                if (channelNoteCounts && channelNoteCounts[i] > 0) {
+                    led.classList.add('active');
                 }
                 
-                // Col 2: Target routing
-                const colTarget = document.createElement('td');
-                colTarget.style.padding = '10px 15px';
-                const targetSelect = document.createElement('select');
-                targetSelect.id = `midiTargetCh${i + 1}`;
-                targetSelect.className = 'mini-select';
-                targetSelect.style.width = '100%';
-                targetSelect.style.maxWidth = '250px';
-                targetSelect.innerHTML = `
-                    <option value="0">Synth 1 (Audio 1 Output)</option>
-                    <option value="1">Synth 2 / Drums (Audio 2 Output)</option>
-                    <option value="2">CV/Gate 1 (Pulse 1 / CV 1 Out)</option>
-                    <option value="3">CV/Gate 2 (Pulse 2 / CV 2 Out)</option>
-                    <option value="4">Disabled</option>
-                `;
-                targetSelect.value = currentTargets[i];
-                colTarget.appendChild(targetSelect);
+                header.appendChild(numLabel);
+                header.appendChild(led);
                 
-                // Col 3: Preset override
-                const colOverride = document.createElement('td');
-                colOverride.style.padding = '10px 15px';
-                const overrideSelect = document.createElement('select');
-                overrideSelect.id = `midiOverrideCh${i + 1}`;
-                overrideSelect.className = 'mini-select';
-                overrideSelect.style.width = '100%';
-                overrideSelect.style.maxWidth = '300px';
+                const badge = document.createElement('span');
+                badge.className = 'midi-pad-badge';
+                badge.id = `midiPadBadgeCh${i + 1}`;
+                badge.style.fontSize = '0.56rem';
+                badge.textContent = getTargetAbbrev(currentTargets[i]);
+                if (i === 9) {
+                    badge.style.borderColor = 'var(--accent)';
+                    badge.style.color = 'var(--accent)';
+                }
                 
-                let overrideHtml = `<option value="-1">No Override (Use MIDI File Presets)</option>`;
+                const presetLabel = document.createElement('span');
+                presetLabel.className = 'midi-pad-preset-label';
+                presetLabel.style.cssText = 'font-size: 0.58rem; color: var(--dim); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 4px; font-family: monospace; display: block; width: 100%; text-align: center;';
+                
+                let presetName = 'No Preset';
+                let isDefault = false;
+                let pIdx = currentOverrides[i];
+                if (pIdx === -1) {
+                    pIdx = getDefaultPresetIndexForChannel(i);
+                    isDefault = true;
+                }
+                if (hasPresets && pIdx >= 0 && pIdx < parsedData.presets.length) {
+                    const truncatedName = truncateInstrumentName(parsedData.presets[pIdx].name, 10);
+                    presetName = truncatedName + (isDefault ? ' (d)' : '');
+                } else {
+                    presetName = presetName + (isDefault ? ' (d)' : '');
+                }
+                presetLabel.textContent = presetName;
+                presetLabel.title = presetName;
+                if (isDefault) {
+                    presetLabel.style.color = 'var(--dim)';
+                } else {
+                    presetLabel.style.color = 'var(--accent)';
+                }
+
+                pad.appendChild(header);
+                pad.appendChild(badge);
+                pad.appendChild(presetLabel);
+                
+                pad.addEventListener('click', () => {
+                    document.querySelectorAll('.midi-channel-pad').forEach(p => p.classList.remove('selected'));
+                    pad.classList.add('selected');
+                    selectedRoutingChannelIdx = i;
+                    updateEditStrip();
+                });
+                
+                gridContainer.appendChild(pad);
+            }
+
+            // 3. Render and update the Channel Edit Strip
+            function updateEditStrip() {
+                const chIdx = selectedRoutingChannelIdx;
+                const targetVal = currentTargets[chIdx];
+                const overrideVal = currentOverrides[chIdx];
+                
+                const isDrumDefault = chIdx === 9;
+                const chLabel = `Channel ${(chIdx + 1).toString().padStart(2, '0')}`;
+                const chSub = isDrumDefault ? 'Drums Default Route' : `Custom routing config for live input / playback`;
+
+                let defaultPresetName = '';
+                if (hasPresets) {
+                    const defaultIdx = getDefaultPresetIndexForChannel(chIdx);
+                    if (defaultIdx >= 0 && defaultIdx < parsedData.presets.length) {
+                        defaultPresetName = truncateInstrumentName(parsedData.presets[defaultIdx].name, 18);
+                    }
+                }
+                const defaultLabel = defaultPresetName ? `No Override (Use Default: ${defaultPresetName})` : `No Override (Use SoundFont Default)`;
+                let overrideOptionsHtml = `<option value="-1">${defaultLabel}</option>`;
                 if (hasPresets) {
                     const sortedPresets = parsedData.presets
                         .map((p, idx) => ({ ...p, originalIndex: idx }))
@@ -1441,22 +1578,129 @@
                             return a.preset - b.preset;
                         });
                     sortedPresets.forEach((p) => {
-                        overrideHtml += `<option value="${p.originalIndex}">${p.name} (Bank ${p.bank} · P${p.preset})</option>`;
+                        const truncatedName = truncateInstrumentName(p.name, 18);
+                        overrideOptionsHtml += `<option value="${p.originalIndex}">${truncatedName} (Bank ${p.bank} · P${p.preset})</option>`;
                     });
                 } else {
-                    overrideHtml += `<option value="-1" disabled>— Load a SoundFont first to override —</option>`;
+                    overrideOptionsHtml = `<option value="-1" disabled>— Load a SoundFont first to override —</option>`;
                 }
-                overrideSelect.innerHTML = overrideHtml;
-                overrideSelect.value = currentOverrides[i];
-                if (!hasPresets) {
-                    overrideSelect.value = -1;
+
+                const trimVal = file
+                    ? (file.channelVolumeTrims && file.channelVolumeTrims[chIdx] !== undefined ? file.channelVolumeTrims[chIdx] : 0)
+                    : (normalModeVolumeTrims[chIdx] !== undefined ? normalModeVolumeTrims[chIdx] : 0);
+
+                editStrip.innerHTML = `
+                    <div class="midi-strip-info">
+                        <div class="midi-strip-ch-label">${chLabel}</div>
+                        <div class="midi-strip-ch-sub">${chSub}</div>
+                    </div>
+                    <div class="midi-strip-fields">
+                        <div class="midi-strip-field">
+                            <label>Target:</label>
+                            <select class="mini-select" id="midiStripTargetSelect" style="min-width: 180px; max-width: 220px;">
+                                <option value="0">Synth 1 (Audio 1 Output)</option>
+                                <option value="1">Synth 2 / Drums (Audio 2 Output)</option>
+                                <option value="2">CV/Gate 1 (Pulse 1 / CV 1 Out)</option>
+                                <option value="3">CV/Gate 2 (Pulse 2 / CV 2 Out)</option>
+                                <option value="4">Disabled / Muted</option>
+                                <option value="5">Synth 1 + CV/Gate 1</option>
+                                <option value="6">Synth 2 + CV/Gate 2</option>
+                            </select>
+                        </div>
+                        <div class="midi-strip-field">
+                            <label>SoundFont Override:</label>
+                            <select class="mini-select" id="midiStripOverrideSelect" style="min-width: 220px; max-width: 320px;">
+                                ${overrideOptionsHtml}
+                            </select>
+                        </div>
+                        <div class="midi-strip-field" style="min-width: 140px; margin-left: 10px;">
+                            <label>Volume Trim: <span id="midiStripVolumeVal" style="color: var(--accent); font-weight: bold;">0 dB</span></label>
+                            <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; height: 24px;">
+                                <input type="range" min="-12" max="6" value="0" class="vel-slider" id="midiStripVolumeSlider" style="width: 100px; margin: 0;">
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                const stripTarget = document.getElementById('midiStripTargetSelect');
+                const stripOverride = document.getElementById('midiStripOverrideSelect');
+                const stripVolume = document.getElementById('midiStripVolumeSlider');
+                const stripVolumeVal = document.getElementById('midiStripVolumeVal');
+
+                stripTarget.value = targetVal;
+                stripOverride.value = overrideVal;
+                if (stripVolume && stripVolumeVal) {
+                    stripVolume.value = trimVal;
+                    stripVolumeVal.textContent = (trimVal >= 0 ? '+' : '') + trimVal + ' dB';
+                    
+                    stripVolume.addEventListener('input', () => {
+                        const val = parseInt(stripVolume.value);
+                        stripVolumeVal.textContent = (val >= 0 ? '+' : '') + val + ' dB';
+                        if (file) {
+                            if (!file.channelVolumeTrims) {
+                                file.channelVolumeTrims = new Array(16).fill(0);
+                            }
+                            file.channelVolumeTrims[chIdx] = val;
+                        } else {
+                            normalModeVolumeTrims[chIdx] = val;
+                        }
+                        saveState();
+                    });
                 }
-                colOverride.appendChild(overrideSelect);
-                
-                row.appendChild(colCh);
-                row.appendChild(colTarget);
-                row.appendChild(colOverride);
-                tableBody.appendChild(row);
+
+                // Bind event listeners to propagate values back to hidden selects & trigger callbacks
+                stripTarget.addEventListener('change', () => {
+                    const val = parseInt(stripTarget.value);
+                    if (file) {
+                        file.channelTargets[chIdx] = val;
+                    } else {
+                        normalModeTargets[chIdx] = val;
+                    }
+
+                    const backingTarget = document.getElementById(`midiTargetCh${chIdx + 1}`);
+                    if (backingTarget) {
+                        backingTarget.value = val;
+                        backingTarget.dispatchEvent(new Event('change'));
+                    }
+                    // Update track views if visible
+                    document.querySelectorAll(`.track-target-select[data-channel="${chIdx}"]`).forEach(sel => {
+                        if (parseInt(sel.value) !== val) {
+                            sel.value = val;
+                            sel.dispatchEvent(new Event('change'));
+                        }
+                    });
+                    saveState();
+                });
+
+                stripOverride.addEventListener('change', () => {
+                    const val = parseInt(stripOverride.value);
+                    if (file) {
+                        file.channelOverrides[chIdx] = val;
+                    } else {
+                        normalModeOverrides[chIdx] = val;
+                    }
+
+                    const backingOverride = document.getElementById(`midiOverrideCh${chIdx + 1}`);
+                    if (backingOverride) {
+                        backingOverride.value = val;
+                        backingOverride.dispatchEvent(new Event('change'));
+                    }
+                    // Update track views if visible
+                    document.querySelectorAll(`.track-override-select[data-channel="${chIdx}"]`).forEach(sel => {
+                        if (parseInt(sel.value) !== val) {
+                            sel.value = val;
+                            sel.dispatchEvent(new Event('change'));
+                        }
+                    });
+                    saveState();
+                });
+            }
+
+            // Initialize the edit strip for the active channel selection
+            updateEditStrip();
+
+            if (selectedMidiFileIdx !== -1) {
+                renderTimelineTracks();
             }
         }
 
@@ -1500,19 +1744,27 @@
 
         function compileMidiContainer(midiFiles) {
             const files = midiFiles || [];
-            const config = getMidiRoutingConfig();
-            const confBlockSize = 136;
-            const headerSize = 8 + confBlockSize + files.length * 32;
+            const confBlockSize = 156; // 4(CONF) + 4(stereo) + 128(ch) + 4(cv1) + 4(cv2) + 4(loop) + 8(cc_maps) = 156
+            const headerSize = 8 + confBlockSize + files.length * 176;
             
+            let stereoMode = normalModeStereoMode;
+            let cv1Mode = normalModeCv1Mode;
+            let cv2Mode = normalModeCv2Mode;
+            let loopMode = normalModeLoopMode;
+
             let currentOffset = headerSize;
             const filesData = [];
             for (const file of files) {
-                const size = file.data.byteLength;
+                let fileBuffer = file.data;
+                if (file.trackChannelOverrides && Object.keys(file.trackChannelOverrides).length > 0) {
+                    fileBuffer = remapMidiChannels(file.data, file.trackChannelOverrides);
+                }
+                const size = fileBuffer.byteLength;
                 filesData.push({
                     name: file.name,
                     offset: currentOffset,
                     size: size,
-                    data: new Uint8Array(file.data)
+                    data: new Uint8Array(fileBuffer)
                 });
                 currentOffset += size;
             }
@@ -1522,17 +1774,34 @@
             containerBuffer.set([77, 73, 68, 83], 0); // "MIDS"
             view.setUint32(4, files.length, true);
             
-            // Write CONF block
+            // Write CONF block (Normal Mode)
+            // Layout: CONF(4) + stereo_mode(4) + channels[16](128) + cv1_mode(4) + cv2_mode(4) + loop_mode(4) + cc_maps[8](8) = 156 bytes
             containerBuffer.set([67, 79, 78, 70], 8); // "CONF"
-            view.setUint32(12, config.stereo_mode, true);
+            view.setUint32(12, stereoMode, true);
             
             let confOffset = 16;
             for (let i = 0; i < 16; i++) {
-                view.setUint32(confOffset, config.channels[i].target, true);
-                view.setInt32(confOffset + 4, config.channels[i].instrument_override, true);
+                view.setUint32(confOffset, normalModeTargets[i], true);
+                view.setInt16(confOffset + 4, normalModeOverrides[i], true);
+                view.setInt16(confOffset + 6, normalModeVolumeTrims[i], true);
                 confOffset += 8;
             }
+            // cv1_mode @ 144, cv2_mode @ 148, loop_mode @ 152
+            view.setUint32(144, cv1Mode, true);
+            view.setUint32(148, cv2Mode, true);
+            view.setUint32(152, loopMode, true);
             
+            // cc_maps @ 156
+            for (let i = 0; i < 8; i++) {
+                let val = 0;
+                if (i < 5 && customCcMappings && customCcMappings[i] !== undefined) {
+                    val = customCcMappings[i];
+                }
+                view.setUint8(156 + i, val);
+            }
+            
+            // FlashMidiHeader layout per file:
+            // name(24) + offset(4) + size(4) + stereo_mode(4) + cv1_mode(4) + cv2_mode(4) + loop_mode(4) + channels[16](128) = 176 bytes
             let headerOffset = 8 + confBlockSize;
             for (const fd of filesData) {
                 const nameBytes = new TextEncoder().encode(fd.name);
@@ -1541,13 +1810,42 @@
                 containerBuffer.set(nameBuf, headerOffset);
                 view.setUint32(headerOffset + 24, fd.offset, true);
                 view.setUint32(headerOffset + 28, fd.size, true);
+                
+                const fileObj = files.find(f => f.name === fd.name);
+                const fileStereoMode = fileObj && fileObj.stereoMode !== undefined ? fileObj.stereoMode : 0;
+                const fileCv1Mode   = fileObj && fileObj.cv1Mode   !== undefined ? fileObj.cv1Mode   : 0;
+                const fileCv2Mode   = fileObj && fileObj.cv2Mode   !== undefined ? fileObj.cv2Mode   : 0;
+                const fileLoopMode  = fileObj && fileObj.loopMode  !== undefined ? fileObj.loopMode  : 0;
+                view.setUint32(headerOffset + 32, fileStereoMode, true);
+                view.setUint32(headerOffset + 36, fileCv1Mode,    true);
+                view.setUint32(headerOffset + 40, fileCv2Mode,    true);
+                view.setUint32(headerOffset + 44, fileLoopMode,   true);
+                
+                // channels routing @ headerOffset+48 (128 bytes)
+                let chOffset = headerOffset + 48;
+                const targets   = fileObj && fileObj.channelTargets  ? fileObj.channelTargets  : normalModeTargets;
+                const overrides = fileObj && fileObj.channelOverrides ? fileObj.channelOverrides : normalModeOverrides;
+                const trims     = fileObj && fileObj.channelVolumeTrims ? fileObj.channelVolumeTrims : Array(16).fill(0);
+                for (let i = 0; i < 16; i++) {
+                    view.setUint32(chOffset, targets[i], true);
+                    view.setInt16(chOffset + 4, overrides[i], true);
+                    view.setInt16(chOffset + 6, trims[i], true);
+                    chOffset += 8;
+                }
+                
                 containerBuffer.set(fd.data, fd.offset);
-                headerOffset += 32;
+                headerOffset += 176;
             }
             return containerBuffer;
         }
 
         async function handleFile(file) {
+            const cardLed = document.getElementById('cardLed');
+            if (cardLed) {
+                cardLed.classList.remove('green');
+                cardLed.classList.add('red', 'active'); // flash red while reading
+            }
+
             fileName.textContent = file.name;
             fileName.title = file.name;
             fileSize.textContent = formatBytes(file.size);
@@ -1556,7 +1854,7 @@
                 showToast('Parsing SoundFont file…', 'info');
                 sf2ArrayBuffer = await file.arrayBuffer();
                 activeSf2Buffer = sf2ArrayBuffer;
-                optimizationSummary.style.display = 'none';
+                optimizedSf2Buffer = null; // clear any cached optimization
                 parsedData = parseSF2(activeSf2Buffer);
 
                 // Build presetSamplesMap from full SF2 tree
@@ -1577,15 +1875,24 @@
                 sf2Details.style.display = 'flex';
                 estBarWrap.style.display = 'flex';
 
-                updateFlashUsage();
                 updateEstimate();
                 renderContents();
                 populateKbBankProgram();
                 renderMidiRoutingTable();
-                showToast('SoundFont loaded and parsed!', 'success');
+                showToast('SoundFont loaded — optimizing…', 'info');
+                await runSf2Optimization(); // shows Optimizing… in flash bar, enables Flash when done
+                showToast('SoundFont ready!', 'success');
+                if (cardLed) {
+                    cardLed.classList.remove('red');
+                    cardLed.classList.add('green', 'active');
+                }
             } catch (err) {
                 console.error(err);
                 showToast('Failed to parse SoundFont: ' + err.message, 'error');
+                if (cardLed) {
+                    cardLed.classList.remove('green');
+                    cardLed.classList.add('red', 'active'); // stay red on error
+                }
             }
         }
 
@@ -1593,10 +1900,20 @@
         flashMode.addEventListener('change', () => {
             updateFlashUsage();
             updateEstimate();
+            saveState();
         });
-        optSampleRate.addEventListener('change', updateEstimate);
-        optMono.addEventListener('change', updateEstimate);
-        optRestructure.addEventListener('change', updateEstimate);
+        optSampleRate.addEventListener('change', () => {
+            updateEstimate();
+            saveState();
+        });
+        optMono.addEventListener('change', () => {
+            updateEstimate();
+            saveState();
+        });
+        optRestructure.addEventListener('change', () => {
+            updateEstimate();
+            saveState();
+        });
 
         // ─── SF2 Fast Parser (phdr + shdr only) ──────────────────────────────────
         function parseSF2(arrayBuffer) {
@@ -2217,67 +2534,7 @@
             return out.buffer;
         }
 
-        // ─── Optimizer Button ─────────────────────────────────────────────────────
-        btnOptimize.addEventListener('click', () => {
-            if (!sf2ArrayBuffer) return;
-            const targetRate = parseInt(optSampleRate.value);
-            const convertToMono = optMono.checked;
-            const restructure = optRestructure.checked;
-            if (targetRate === 0 && !convertToMono && !restructure) {
-                showToast('No optimization selected.', 'info');
-                return;
-            }
-            showToast('Optimizing SoundFont…', 'info');
-            btnOptimize.disabled = true;
-            btnOptimize.textContent = 'Optimizing…';
-            setTimeout(() => {
-                try {
-                    const t0 = performance.now();
-                    const optimizedBuffer = optimizeSF2(sf2ArrayBuffer, targetRate, convertToMono, restructure);
-                    const dur = ((performance.now() - t0) / 1000).toFixed(2);
-                    activeSf2Buffer = optimizedBuffer;
-                    parsedData = parseSF2(activeSf2Buffer);
-                    presetSamplesMap = buildPresetSamplesMap(activeSf2Buffer);
-                    parsedPresetZones = buildPresetZones(activeSf2Buffer);
-                    decodedBuffers = {};
-                    localPanic();
 
-                    const origSize = sf2ArrayBuffer.byteLength;
-                    const newSize = activeSf2Buffer.byteLength;
-                    const reductionPct = ((origSize - newSize) / origSize * 100).toFixed(1);
-
-                    if (!fileName.textContent.includes('[optimized]')) fileName.textContent += ' [optimized]';
-                    fileSize.textContent = formatBytes(newSize);
-                    updateFlashUsage();
-
-                    const uniqueBanks = new Set(parsedData.presets.map(p => p.bank));
-                    parsedBanks.textContent = uniqueBanks.size;
-                    parsedPresets.textContent = parsedData.presets.length;
-                    parsedSamples.textContent = parsedData.samples.length;
-
-                    optimizationSummary.style.display = 'block';
-                    optimizationSummary.innerHTML = `
-                        <strong>Optimization Complete!</strong><br>
-                        • Processed in: ${dur}s<br>
-                        • Original size: ${(origSize / (1024 * 1024)).toFixed(2)} MB<br>
-                        • Optimized size: ${(newSize / (1024 * 1024)).toFixed(2)} MB<br>
-                        • Size reduction: <strong>${reductionPct}%</strong><br>
-                        • Space saved: ${((origSize - newSize) / (1024 * 1024)).toFixed(2)} MB
-                    `;
-
-                    updateEstimate();
-                    renderContents();
-                    populateKbBankProgram();
-                    showToast('SoundFont optimized!', 'success');
-                } catch (err) {
-                    console.error(err);
-                    showToast('Optimization failed: ' + err.message, 'error');
-                } finally {
-                    btnOptimize.disabled = false;
-                    btnOptimize.textContent = '⚙ Optimize SoundFont';
-                }
-            }, 50);
-        });
 
         // ─── UF2 Export ───────────────────────────────────────────────────────────
         btnDownload.addEventListener('click', () => {
@@ -2325,6 +2582,20 @@
                 blocks.push(makeUf2Block(paddedChunk, startAddress + offset, i, numBlocks));
             }
             return blocks;
+        }
+
+        function getDefaultPresetIndexForChannel(i) {
+            if (!parsedData || !parsedData.presets || parsedData.presets.length === 0) return -1;
+            if (i === 9) { // Channel 10 drums
+                const idx = parsedData.presets.findIndex(p => p.bank === 128);
+                if (idx !== -1) return idx;
+            }
+            let idx = parsedData.presets.findIndex(p => p.preset === i && p.bank === 0);
+            if (idx !== -1) return idx;
+            idx = parsedData.presets.findIndex(p => p.preset === i);
+            if (idx !== -1) return idx;
+            if (i < parsedData.presets.length) return i;
+            return 0;
         }
 
         function compileStaticIndex(sf2Buffer) {
@@ -2514,31 +2785,106 @@
             return combined.buffer;
         }
 
-        function generateUf2Data() {
-            if (!activeSf2Buffer) return null;
+        function generateUf2Data(mode = 'all') {
+            // Verify all MIDI files are online (only if we are flashing all or midi)
+            if (mode === 'all' || mode === 'midi') {
+                const offlineFiles = uploadedMidiFiles.filter(f => !f.data);
+                if (offlineFiles.length > 0) {
+                    const names = offlineFiles.map(f => `"${f.name}"`).join(', ');
+                    showToast(`Cannot flash/export: The following MIDI files are offline: ${names}. Please re-upload them.`, 'error');
+                    return null;
+                }
+            }
+
+            const capacity = selectedSoundFontCapacity();
+
+            if (mode === 'midi') {
+                const midiContainer = compileMidiContainer(uploadedMidiFiles);
+                const totalMidiSize = midiContainer ? midiContainer.byteLength : 0;
+                if (totalMidiSize === 0) {
+                    showToast("No MIDI configuration to compile.", "error");
+                    return null;
+                }
+                if (totalMidiSize > 512000) {
+                    showToast(`MIDI files size ${formatBytes(totalMidiSize)} exceeds 500KB limit.`, 'error');
+                    return null;
+                }
+                showToast('Generating MIDI configuration UF2 payload…', 'info');
+                let midiBlocks = binToUf2Blocks(midiContainer, 0x1007D000);
+                const totalBlocks = midiBlocks.length;
+                const combinedUf2 = new Uint8Array(totalBlocks * 512);
+                const combinedView = new DataView(combinedUf2.buffer);
+                let blockIdx = 0;
+                for (const block of midiBlocks) {
+                    const offset = blockIdx * 512;
+                    combinedUf2.set(block, offset);
+                    combinedView.setUint32(offset + 20, blockIdx, true);
+                    combinedView.setUint32(offset + 24, totalBlocks, true);
+                    blockIdx++;
+                }
+                return combinedUf2;
+            }
+
+            let indexedSf2Buffer = null;
+            if (activeSf2Buffer && (mode === 'all' || mode === 'sf2')) {
+                // Auto-optimize SF2 buffer on-the-fly when generating UF2 data
+                const targetRate = parseInt(optSampleRate.value);
+                const convertToMono = optMono.checked;
+                const restructure = optRestructure ? optRestructure.checked : false;
+
+                let sf2ToUse = activeSf2Buffer;
+                if (convertToMono || targetRate > 0) {
+                    showToast('Optimizing SoundFont on-the-fly...', 'info');
+                    try {
+                        sf2ToUse = optimizeSF2(activeSf2Buffer, targetRate, convertToMono, restructure);
+                    } catch (optErr) {
+                        console.error("Auto-optimization failed, flashing original SoundFont:", optErr);
+                        showToast("Auto-optimization failed: " + optErr.message, "warning");
+                    }
+                }
+
+                try {
+                    indexedSf2Buffer = compileStaticIndex(sf2ToUse);
+                } catch (err) {
+                    showToast(`Failed to index SoundFont: ${err.message}`, 'error');
+                    return null;
+                }
+
+                if (indexedSf2Buffer.byteLength > capacity) {
+                    showToast(`SoundFont + Index is ${formatBytes(indexedSf2Buffer.byteLength)}; selected card holds ${formatBytes(capacity)} after firmware.`, 'error');
+                    updateFlashUsage();
+                    return null;
+                }
+            }
+
+            if (mode === 'sf2') {
+                if (!indexedSf2Buffer) {
+                    showToast("No SoundFont loaded to flash.", "error");
+                    return null;
+                }
+                showToast('Generating SoundFont UF2 payload…', 'info');
+                let sf2Blocks = binToUf2Blocks(indexedSf2Buffer, SOUNDFONT_FLASH_ADDRESS);
+                const totalBlocks = sf2Blocks.length;
+                const combinedUf2 = new Uint8Array(totalBlocks * 512);
+                const combinedView = new DataView(combinedUf2.buffer);
+                let blockIdx = 0;
+                for (const block of sf2Blocks) {
+                    const offset = blockIdx * 512;
+                    combinedUf2.set(block, offset);
+                    combinedView.setUint32(offset + 20, blockIdx, true);
+                    combinedView.setUint32(offset + 24, totalBlocks, true);
+                    blockIdx++;
+                }
+                return combinedUf2;
+            }
+
             const baseUf2Blocks = selectedFirmwareBlocks();
             if (baseUf2Blocks.length === 0) {
                 showToast('Base firmware is missing for the selected card mode; cannot build combined UF2.', 'error');
                 return null;
             }
 
-            const capacity = selectedSoundFontCapacity();
-            let indexedSf2Buffer;
-            try {
-                indexedSf2Buffer = compileStaticIndex(activeSf2Buffer);
-            } catch (err) {
-                showToast(`Failed to index SoundFont: ${err.message}`, 'error');
-                return null;
-            }
-
-            if (indexedSf2Buffer.byteLength > capacity) {
-                showToast(`SoundFont + Index is ${formatBytes(indexedSf2Buffer.byteLength)}; selected card holds ${formatBytes(capacity)} after firmware.`, 'error');
-                updateFlashUsage();
-                return null;
-            }
-
             const midiContainer = compileMidiContainer(uploadedMidiFiles);
-
             const totalMidiSize = midiContainer ? midiContainer.byteLength : 0;
             if (totalMidiSize > 512000) {
                 showToast(`MIDI files size ${formatBytes(totalMidiSize)} exceeds 500KB limit.`, 'error');
@@ -2555,11 +2901,14 @@
 
             const firmwareEnd = maxFirmwareAddr + 256;
             const flashEnd = FLASH_BASE_ADDRESS + selectedFlashBytes();
-            const soundFontEnd = SOUNDFONT_FLASH_ADDRESS + Math.ceil(indexedSf2Buffer.byteLength / 256) * 256;
-            if (soundFontEnd > flashEnd) {
-                showToast(`Combined image exceeds selected ${formatBytes(selectedFlashBytes())} card.`, 'error');
-                updateFlashUsage();
-                return null;
+
+            if (indexedSf2Buffer) {
+                const soundFontEnd = SOUNDFONT_FLASH_ADDRESS + Math.ceil(indexedSf2Buffer.byteLength / 256) * 256;
+                if (soundFontEnd > flashEnd) {
+                    showToast(`Combined image exceeds selected ${formatBytes(selectedFlashBytes())} card.`, 'error');
+                    updateFlashUsage();
+                    return null;
+                }
             }
 
             let midiBlocks = [];
@@ -2569,10 +2918,15 @@
                 midiEnd = 0x1007D000 + Math.ceil(totalMidiSize / 256) * 256;
             }
 
-            let gap1End = midiContainer ? 0x1007D000 : SOUNDFONT_FLASH_ADDRESS;
+            let gap1End = midiContainer ? 0x1007D000 : (indexedSf2Buffer ? SOUNDFONT_FLASH_ADDRESS : firmwareEnd);
             const gap1BlocksCount = Math.floor(Math.max(0, gap1End - firmwareEnd) / 256);
-            const gap2BlocksCount = midiContainer ? Math.floor(Math.max(0, SOUNDFONT_FLASH_ADDRESS - midiEnd) / 256) : 0;
-            const sf2Blocks = binToUf2Blocks(indexedSf2Buffer, SOUNDFONT_FLASH_ADDRESS);
+            
+            let gap2BlocksCount = 0;
+            let sf2Blocks = [];
+            if (indexedSf2Buffer) {
+                gap2BlocksCount = midiContainer ? Math.floor(Math.max(0, SOUNDFONT_FLASH_ADDRESS - midiEnd) / 256) : 0;
+                sf2Blocks = binToUf2Blocks(indexedSf2Buffer, SOUNDFONT_FLASH_ADDRESS);
+            }
 
             const totalBlocks = baseUf2Blocks.length + gap1BlocksCount + midiBlocks.length + gap2BlocksCount + sf2Blocks.length;
             const combinedUf2 = new Uint8Array(totalBlocks * 512);
@@ -2624,11 +2978,14 @@
         }
 
         // ─── WebUSB Flashing ──────────────────────────────────────────────────────
-        async function flashToDevice() {
-            const combinedUf2 = generateUf2Data();
+        async function flashToDevice(mode = 'all') {
+            const combinedUf2 = generateUf2Data(mode);
             if (!combinedUf2) return;
             
-            btnFlash.disabled = true;
+            if (btnFlashAll) btnFlashAll.disabled = true;
+            if (btnFlashMidi) btnFlashMidi.disabled = true;
+            if (btnFlashSf2) btnFlashSf2.disabled = true;
+            
             progressContainer.style.display = 'block';
             progressStatus.textContent = 'Requesting device…';
             progressFill.style.width = '0%';
@@ -2680,7 +3037,7 @@
 
                 progressStatus.textContent = 'Rebooting card…';
                 await picoboot.reboot(100);
-                showToast('SoundFont flashed successfully!', 'success');
+                showToast('Flashed to device successfully!', 'success');
             } catch (err) {
                 console.error(err);
                 showToast('Flashing failed: ' + err.message, 'error');
@@ -2693,7 +3050,9 @@
             }
         }
 
-        btnFlash.addEventListener('click', flashToDevice);
+        if (btnFlashAll) btnFlashAll.addEventListener('click', () => flashToDevice('all'));
+        if (btnFlashMidi) btnFlashMidi.addEventListener('click', () => flashToDevice('midi'));
+        if (btnFlashSf2) btnFlashSf2.addEventListener('click', () => flashToDevice('sf2'));
 
         // ═══════════════════════════════════════════════════════════════════════════
         // ─── WEB MIDI ────────────────────────────────────────────────────────────
@@ -2962,6 +3321,59 @@
         });
 
         // ─── Local Preview Player / Sampler Engine ─────────────────────────────────
+        function stopVoiceByKey(key) {
+            const voices = activeVoices[key];
+            if (!voices || !audioCtx) return;
+
+            const now = audioCtx.currentTime;
+            voices.forEach(voice => {
+                try {
+                    const currentGain = voice.gainNode.gain.value || 0.15;
+                    voice.gainNode.gain.setValueAtTime(currentGain, now);
+                    
+                    if (voice.isSynthFallback) {
+                        voice.gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
+                        voice.source.stop(now + 0.15);
+                    } else {
+                        voice.gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.06);
+                        voice.source.stop(now + 0.06);
+                    }
+                } catch (e) {}
+            });
+            delete activeVoices[key];
+
+            // If it's a MIDI channel voice key ("channel-midi"), also update the LED
+            if (typeof key === 'string' && key.includes('-')) {
+                const parts = key.split('-');
+                const channel = parseInt(parts[0]);
+                updateChannelLed(channel, false);
+            }
+        }
+
+        function enforcePolyphonyLimit(newVoicesCount) {
+            if (!audioCtx) return;
+            while (true) {
+                let totalActiveSources = 0;
+                let oldestKey = null;
+                let oldestTime = Infinity;
+                for (const k in activeVoices) {
+                    if (activeVoices[k]) {
+                        totalActiveSources += activeVoices[k].length;
+                        const t = activeVoices[k].startTime || 0;
+                        if (t < oldestTime) {
+                            oldestTime = t;
+                            oldestKey = k;
+                        }
+                    }
+                }
+                if (totalActiveSources + newVoicesCount > 8 && oldestKey !== null) {
+                    stopVoiceByKey(oldestKey);
+                } else {
+                    break;
+                }
+            }
+        }
+
         function playLocalNote(midi) {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -2983,6 +3395,9 @@
                     ) || [];
 
                     if (matchingZones.length > 0) {
+                        const newVoicesCount = matchingZones.length;
+                        enforcePolyphonyLimit(newVoicesCount);
+
                         const voices = [];
                         matchingZones.forEach(zone => {
                             const buffer = getDecodedBuffer(zone.sampleID);
@@ -3020,6 +3435,7 @@
                         });
 
                         if (voices.length > 0) {
+                            voices.startTime = performance.now();
                             activeVoices[midi] = voices;
                         }
                         return;
@@ -3028,6 +3444,7 @@
             }
 
             // Fallback Synth: Triangle wave with premium soft envelope
+            enforcePolyphonyLimit(1);
             const osc = audioCtx.createOscillator();
             const gainNode = audioCtx.createGain();
             const velocity = getVelocity();
@@ -3043,47 +3460,42 @@
             osc.connect(gainNode).connect(audioCtx.destination);
             osc.start(now);
 
-            activeVoices[midi] = [{ source: osc, gainNode, isSynthFallback: true }];
+            const fallbackVoices = [{ source: osc, gainNode, isSynthFallback: true }];
+            fallbackVoices.startTime = performance.now();
+            activeVoices[midi] = fallbackVoices;
         }
 
         function stopLocalNote(midi) {
-            const voices = activeVoices[midi];
-            if (!voices || !audioCtx) return;
-
-            const now = audioCtx.currentTime;
-            voices.forEach(voice => {
-                try {
-                    const currentGain = voice.gainNode.gain.value || 0.15;
-                    voice.gainNode.gain.setValueAtTime(currentGain, now);
-                    
-                    if (voice.isSynthFallback) {
-                        voice.gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
-                        voice.source.stop(now + 0.15);
-                    } else {
-                        voice.gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.06);
-                        voice.source.stop(now + 0.06);
-                    }
-                } catch (e) {}
-            });
-            delete activeVoices[midi];
+            stopVoiceByKey(midi);
         }
 
         function localPanic() {
-            if (!audioCtx) return;
-            const now = audioCtx.currentTime;
-            for (const midi in activeVoices) {
-                const voices = activeVoices[midi];
-                if (voices) {
-                    voices.forEach(v => {
-                        try {
-                            v.gainNode.gain.setValueAtTime(v.gainNode.gain.value, now);
-                            v.gainNode.gain.linearRampToValueAtTime(0, now + 0.02);
-                            v.source.stop(now + 0.02);
-                        } catch (e) {}
-                    });
+            if (audioCtx) {
+                const now = audioCtx.currentTime;
+                for (const key in activeVoices) {
+                    const voices = activeVoices[key];
+                    if (voices) {
+                        voices.forEach(v => {
+                            try {
+                                v.gainNode.gain.setValueAtTime(v.gainNode.gain.value, now);
+                                v.gainNode.gain.linearRampToValueAtTime(0, now + 0.02);
+                                v.source.stop(now + 0.02);
+                            } catch (e) {}
+                        });
+                    }
                 }
             }
             activeVoices = {};
+            channelNoteCounts.fill(0);
+            document.querySelectorAll('.channel-led').forEach(led => led.classList.remove('active'));
+
+            if (midiOutput) {
+                for (let ch = 0; ch < 16; ch++) {
+                    try {
+                        midiOutput.send([0xB0 | ch, 123, 0]); // All Notes Off
+                    } catch (e) {}
+                }
+            }
         }
 
         function buildPresetZones(arrayBuffer) {
@@ -3290,8 +3702,158 @@
         let midiPlaybackCurrentIdx = 0;
         let midiPlaybackPlaying = false;
         let midiPlaybackLoadedFileIdx = -1;
+        let midiPlaybackSeekMs = 0;
+        let selectedMidiData = null;
+        let selectedMidiDurationMs = 0;
+        let selectedMidiFileIdx = -1;
+        let timelineLoopEnabled = false;
 
-        function parseMidiFile(arrayBuffer) {
+        function remapMidiChannels(arrayBuffer, trackChannelOverrides) {
+            if (!trackChannelOverrides || Object.keys(trackChannelOverrides).length === 0) {
+                return arrayBuffer;
+            }
+            
+            const data = new Uint8Array(arrayBuffer.slice(0)); // Clone the buffer
+            const view = new DataView(data.buffer);
+            
+            if (data.length < 14 || view.getUint32(0, false) !== 0x4D546864) {
+                return arrayBuffer; // Not valid, return original
+            }
+            
+            const headerLen = view.getUint32(4, false);
+            const numTracks = view.getUint16(10, false);
+            
+            let pos = 8 + headerLen;
+            for (let t = 0; t < numTracks; t++) {
+                if (pos + 8 > data.length) break;
+                if (view.getUint32(pos, false) !== 0x4D54726B) {
+                    pos += 8 + view.getUint32(pos + 4, false);
+                    continue;
+                }
+                
+                const trackLen = view.getUint32(pos + 4, false);
+                let trackPos = pos + 8;
+                const trackEnd = trackPos + trackLen;
+                
+                let runningStatus = 0;
+                
+                while (trackPos < trackEnd && trackPos < data.length) {
+                    // Read delta time (variable length quantity)
+                    while (true) {
+                        const b = data[trackPos++];
+                        if (!(b & 0x80)) break;
+                    }
+                    
+                    let status = data[trackPos];
+                    let isStatusByte = (status & 0x80) !== 0;
+                    
+                    if (isStatusByte) {
+                        runningStatus = status;
+                        
+                        // Check if it's a channel status byte (0x80 to 0xEF)
+                        if (status >= 0x80 && status <= 0xEF) {
+                            const originalCh = status & 0x0F;
+                            let targetCh = undefined;
+                            
+                            // Check specific virtual channel first, then track-wide
+                            if (trackChannelOverrides[`${t}_ch${originalCh}`] !== undefined) {
+                                targetCh = trackChannelOverrides[`${t}_ch${originalCh}`];
+                            } else if (trackChannelOverrides[`${t}`] !== undefined) {
+                                targetCh = trackChannelOverrides[`${t}`];
+                            }
+                            
+                            if (targetCh !== undefined && targetCh >= 0 && targetCh <= 15) {
+                                const newStatus = (status & 0xF0) | targetCh;
+                                data[trackPos] = newStatus; // Rewrite status byte in buffer
+                                runningStatus = newStatus;
+                            }
+                        }
+                        trackPos++;
+                    } else {
+                        status = runningStatus;
+                    }
+                    
+                    const eventType = status & 0xF0;
+                    
+                    if (status === 0xFF) {
+                        const type = data[trackPos++];
+                        let len = 0;
+                        while (true) {
+                            const b = data[trackPos++];
+                            len = (len << 7) | (b & 0x7F);
+                            if (!(b & 0x80)) break;
+                        }
+                        trackPos += len;
+                    } else if (status === 0xF0 || status === 0xF7) {
+                        let len = 0;
+                        while (true) {
+                            const b = data[trackPos++];
+                            len = (len << 7) | (b & 0x7F);
+                            if (!(b & 0x80)) break;
+                        }
+                        trackPos += len;
+                    } else {
+                        // Channel message data bytes
+                        if (eventType === 0x90 || eventType === 0x80 || eventType === 0xB0 || eventType === 0xA0 || eventType === 0xE0) {
+                            trackPos += 2;
+                        } else if (eventType === 0xC0 || eventType === 0xD0) {
+                            trackPos += 1;
+                        }
+                    }
+                }
+                pos = trackEnd;
+            }
+            
+            return data.buffer;
+        }
+
+        function calculatePeakPolyphony(scheduledEvents) {
+            let maxVoices = 0;
+            const activeNotes = new Set();
+            for (const evt of scheduledEvents) {
+                if (evt.type === 'noteOn' && evt.velocity > 0) {
+                    const noteKey = `${evt.channel}-${evt.note}`;
+                    activeNotes.add(noteKey);
+                    if (activeNotes.size > maxVoices) {
+                        maxVoices = activeNotes.size;
+                    }
+                } else if (evt.type === 'noteOff' || (evt.type === 'noteOn' && evt.velocity === 0)) {
+                    const noteKey = `${evt.channel}-${evt.note}`;
+                    activeNotes.delete(noteKey);
+                }
+            }
+            return maxVoices;
+        }
+
+        function updatePolyphonyWarning(scheduledEvents) {
+            const warningEl = document.getElementById('timelinePolyphonyWarning');
+            const warningTextEl = document.getElementById('timelinePolyphonyWarningText');
+            const iconEl = document.getElementById('timelinePolyphonyIcon');
+            if (!warningEl || !warningTextEl || !iconEl) return;
+            
+            if (!scheduledEvents || scheduledEvents.length === 0) {
+                warningEl.style.display = 'none';
+                return;
+            }
+            
+            const peak = calculatePeakPolyphony(scheduledEvents);
+            warningEl.style.display = 'flex';
+            if (peak > 8) {
+                warningEl.style.background = 'rgba(255, 170, 0, 0.1)';
+                warningEl.style.borderColor = 'rgba(255, 170, 0, 0.3)';
+                warningEl.style.color = '#ffaa00';
+                iconEl.textContent = '⚠️';
+                warningTextEl.textContent = `Peak: ${peak} voices (Exceeds hardware limit of 8). Preview simulates voice stealing.`;
+            } else {
+                warningEl.style.background = 'rgba(0, 255, 136, 0.1)';
+                warningEl.style.borderColor = 'rgba(0, 255, 136, 0.3)';
+                warningEl.style.color = '#00ff88';
+                iconEl.textContent = '✅';
+                warningTextEl.textContent = `Peak: ${peak} voices (Within hardware limit of 8).`;
+            }
+        }
+
+        function parseMidiFile(arrayBuffer, trackChannelOverrides = {}) {
             const data = new Uint8Array(arrayBuffer);
             const view = new DataView(arrayBuffer);
             
@@ -3310,6 +3872,7 @@
             
             let pos = 8 + headerLen;
             const allEvents = [];
+            const trackNames = {};
             
             for (let t = 0; t < numTracks; t++) {
                 if (pos + 8 > data.length) break;
@@ -3343,7 +3906,17 @@
                     }
                     
                     const eventType = status & 0xF0;
-                    const channel = status & 0x0F;
+                    let channel = status & 0x0F;
+                    const originalCh = channel;
+                    
+                    if (status >= 0x80 && status <= 0xEF) {
+                        const specKey = `${t}_ch${originalCh}`;
+                        if (trackChannelOverrides[specKey] !== undefined) {
+                            channel = trackChannelOverrides[specKey];
+                        } else if (trackChannelOverrides[`${t}`] !== undefined) {
+                            channel = trackChannelOverrides[`${t}`];
+                        }
+                    }
                     
                     if (status === 0xFF) {
                         const type = data[trackPos++];
@@ -3354,9 +3927,19 @@
                             if (!(b & 0x80)) break;
                         }
                         
-                        if (type === 0x51) {
+                        if (type === 0x03) {
+                            try {
+                                const nameBytes = data.subarray(trackPos, trackPos + len);
+                                const name = new TextDecoder().decode(nameBytes).replace(/\0/g, '').trim();
+                                if (name) {
+                                    trackNames[t] = name;
+                                }
+                            } catch (e) {
+                                console.warn('Failed to decode track name:', e);
+                            }
+                        } else if (type === 0x51) {
                             const tempo = (data[trackPos] << 16) | (data[trackPos + 1] << 8) | data[trackPos + 2];
-                            allEvents.push({ ticks, type: 'tempo', tempo });
+                            allEvents.push({ ticks, type: 'tempo', tempo, trackIndex: t });
                         }
                         trackPos += len;
                     } else if (status === 0xF0 || status === 0xF7) {
@@ -3375,12 +3958,38 @@
                                 ticks,
                                 type: eventType === 0x90 && velocity > 0 ? 'noteOn' : 'noteOff',
                                 channel,
+                                originalChannel: originalCh,
                                 note,
-                                velocity
+                                velocity,
+                                trackIndex: t
                             });
-                        } else if (eventType === 0xA0 || eventType === 0xB0 || eventType === 0xE0) {
+                        } else if (eventType === 0xB0) {
+                            const controller = data[trackPos++];
+                            const value = data[trackPos++];
+                            if (controller === 0 || controller === 32) {
+                                allEvents.push({
+                                    ticks,
+                                    type: 'bankSelect',
+                                    channel,
+                                    originalChannel: originalCh,
+                                    controller,
+                                    value,
+                                    trackIndex: t
+                                });
+                            }
+                        } else if (eventType === 0xC0) {
+                            const program = data[trackPos++];
+                            allEvents.push({
+                                ticks,
+                                type: 'programChange',
+                                channel,
+                                originalChannel: originalCh,
+                                program,
+                                trackIndex: t
+                            });
+                        } else if (eventType === 0xA0 || eventType === 0xE0) {
                             trackPos += 2;
-                        } else if (eventType === 0xC0 || eventType === 0xD0) {
+                        } else if (eventType === 0xD0) {
                             trackPos += 1;
                         }
                     }
@@ -3395,6 +4004,7 @@
             let currentTimeMs = 0;
             
             const scheduledEvents = [];
+            const trackEvents = Array.from({ length: numTracks }, () => []);
             
             for (const evt of allEvents) {
                 const deltaTicks = evt.ticks - currentTicks;
@@ -3407,24 +4017,89 @@
                 if (evt.type === 'tempo') {
                     currentTempoUs = evt.tempo;
                 } else {
-                    scheduledEvents.push({
+                    const trackEvt = {
                         timeMs: currentTimeMs,
                         type: evt.type,
                         channel: evt.channel,
+                        originalChannel: evt.originalChannel,
                         note: evt.note,
-                        velocity: evt.velocity
+                        velocity: evt.velocity,
+                        trackIndex: evt.trackIndex
+                    };
+                    scheduledEvents.push(trackEvt);
+                    trackEvents[evt.trackIndex].push(trackEvt);
+                }
+            }
+            
+            // Build the list of tracks
+            const tracks = [];
+            for (let t = 0; t < numTracks; t++) {
+                const tEvents = trackEvents[t] || [];
+                if (tEvents.length === 0 && !trackNames[t]) {
+                    continue;
+                }
+                
+                const channelsUsed = new Set();
+                tEvents.forEach(e => {
+                    if (e.channel !== undefined) channelsUsed.add(e.channel);
+                });
+                
+                if (channelsUsed.size <= 1) {
+                    const channel = channelsUsed.size === 1 ? Array.from(channelsUsed)[0] : 0;
+                    const anyEvt = tEvents.find(e => e.originalChannel !== undefined);
+                    const originalChannel = anyEvt ? anyEvt.originalChannel : channel;
+                    const noteOns = tEvents.filter(e => e.type === 'noteOn');
+                    tracks.push({
+                        trackIndex: t,
+                        originalChannel: originalChannel,
+                        name: trackNames[t] || `Track ${t + 1}`,
+                        channel: channel,
+                        events: tEvents,
+                        notesCount: noteOns.length
+                    });
+                } else {
+                    const sortedChannels = Array.from(channelsUsed).sort((a, b) => a - b);
+                    sortedChannels.forEach(ch => {
+                        const chEvents = tEvents.filter(e => e.channel === ch || e.channel === undefined);
+                        const noteOns = chEvents.filter(e => e.type === 'noteOn');
+                        if (noteOns.length > 0) {
+                            const anyEvt = chEvents.find(e => e.originalChannel !== undefined);
+                            const originalChannel = anyEvt ? anyEvt.originalChannel : ch;
+                            tracks.push({
+                                trackIndex: t,
+                                originalChannel: originalChannel,
+                                name: trackNames[t] ? `${trackNames[t]} (Ch ${ch + 1})` : `Track ${t + 1} (Ch ${ch + 1})`,
+                                channel: ch,
+                                events: chEvents,
+                                notesCount: noteOns.length
+                            });
+                        }
                     });
                 }
             }
             
-            return scheduledEvents;
+            return {
+                durationMs: currentTimeMs,
+                tracks: tracks,
+                scheduledEvents: scheduledEvents
+            };
         }
 
-        function startLocalMidiPlayback(events, fileIdx) {
+        function getElapsedMs() {
+            if (!midiPlaybackPlaying) {
+                return midiPlaybackSeekMs;
+            }
+            return (performance.now() - midiPlaybackStartRealTime) + midiPlaybackSeekMs;
+        }
+
+        function startLocalMidiPlayback(events, fileIdx, startFromMs = 0) {
             stopLocalMidiPlayback();
             
             midiPlaybackEvents = events;
-            midiPlaybackCurrentIdx = 0;
+            midiPlaybackSeekMs = startFromMs;
+            midiPlaybackCurrentIdx = events.findIndex(evt => evt.timeMs >= startFromMs);
+            if (midiPlaybackCurrentIdx === -1) midiPlaybackCurrentIdx = 0;
+            
             midiPlaybackLoadedFileIdx = fileIdx;
             midiPlaybackPlaying = true;
             
@@ -3439,15 +4114,25 @@
             
             function tick() {
                 if (!midiPlaybackPlaying) return;
-                const elapsedMs = performance.now() - midiPlaybackStartRealTime;
+                const elapsedMs = getElapsedMs();
                 
                 while (midiPlaybackCurrentIdx < midiPlaybackEvents.length) {
                     const evt = midiPlaybackEvents[midiPlaybackCurrentIdx];
                     if (evt.timeMs <= elapsedMs) {
                         if (evt.type === 'noteOn') {
                             playLocalNoteFromMidi(evt.note, evt.velocity, evt.channel);
+                            if (midiOutput) {
+                                try {
+                                    midiOutput.send([0x90 | evt.channel, evt.note, evt.velocity]);
+                                } catch (e) {}
+                            }
                         } else if (evt.type === 'noteOff') {
                             stopLocalNoteFromMidi(evt.note, evt.channel);
+                            if (midiOutput) {
+                                try {
+                                    midiOutput.send([0x80 | evt.channel, evt.note, 0]);
+                                } catch (e) {}
+                            }
                         }
                         midiPlaybackCurrentIdx++;
                     } else {
@@ -3455,10 +4140,25 @@
                     }
                 }
                 
+                updatePlayheadPosition();
+                
                 if (midiPlaybackCurrentIdx >= midiPlaybackEvents.length) {
-                    midiPlaybackPlaying = false;
-                    updateMidiPlayUI();
-                    showToast('MIDI playback finished.', 'success');
+                    if (timelineLoopEnabled) {
+                        localPanic();
+                        midiPlaybackSeekMs = 0;
+                        midiPlaybackCurrentIdx = 0;
+                        midiPlaybackStartRealTime = performance.now();
+                        updatePlayheadPosition();
+                        midiPlaybackTimer = requestAnimationFrame(tick);
+                    } else {
+                        midiPlaybackPlaying = false;
+                        updateMidiPlayUI();
+                        updateTimelinePlayBtnLabel();
+                        showToast('MIDI playback finished.', 'success');
+                        midiPlaybackSeekMs = 0;
+                        midiPlaybackCurrentIdx = 0;
+                        updatePlayheadPosition();
+                    }
                 } else {
                     midiPlaybackTimer = requestAnimationFrame(tick);
                 }
@@ -3476,6 +4176,7 @@
             }
             localPanic();
             updateMidiPlayUI();
+            updateTimelinePlayBtnLabel();
         }
 
         function updateMidiPlayUI() {
@@ -3494,6 +4195,520 @@
                     }
                 }
             });
+            updateTimelinePlayBtnLabel();
+        }
+
+        function updateTimelinePlayBtnLabel() {
+            const btn = document.getElementById('timelinePlayBtn');
+            if (btn) {
+                if (midiPlaybackPlaying) {
+                    btn.innerHTML = '⏸ PAUSE';
+                    btn.style.color = 'var(--accent)';
+                } else {
+                    btn.innerHTML = '▶ PLAY';
+                    btn.style.color = '#fff';
+                }
+            }
+        }
+
+        function updatePlayheadPosition() {
+            const outer = document.getElementById('timelineTracksContainerOuter');
+            const playhead = document.getElementById('timelinePlayhead');
+            const progressFill = document.getElementById('timelineRulerProgress');
+            const timeLabel = document.getElementById('timelineTimeLabel');
+            
+            if (!outer || !playhead || selectedMidiDurationMs <= 0) return;
+            
+            const elapsed = getElapsedMs();
+            const pct = Math.min(1, Math.max(0, elapsed / selectedMidiDurationMs));
+            
+            if (progressFill) {
+                progressFill.style.width = (pct * 100) + '%';
+            }
+            
+            if (timeLabel) {
+                timeLabel.textContent = `${formatTime(elapsed)} / ${formatTime(selectedMidiDurationMs)}`;
+            }
+            
+            const outerWidth = outer.getBoundingClientRect().width;
+            const canvasStart = 475; // track-info (150) + track-channel (70) + track-routing (255)
+            const canvasWidth = outerWidth - canvasStart;
+            
+            if (canvasWidth > 0) {
+                const playheadLeft = canvasStart + pct * canvasWidth;
+                playhead.style.left = playheadLeft + 'px';
+                playhead.style.display = 'block';
+            } else {
+                playhead.style.display = 'none';
+            }
+        }
+
+        function seekToPercentage(pct) {
+            if (!selectedMidiData) return;
+            const targetMs = pct * selectedMidiDurationMs;
+            
+            localPanic();
+            
+            midiPlaybackSeekMs = targetMs;
+            midiPlaybackStartRealTime = performance.now();
+            midiPlaybackCurrentIdx = selectedMidiData.scheduledEvents.findIndex(evt => evt.timeMs >= targetMs);
+            if (midiPlaybackCurrentIdx === -1) midiPlaybackCurrentIdx = 0;
+            
+            updatePlayheadPosition();
+            
+            if (midiPlaybackPlaying) {
+                startLocalMidiPlayback(selectedMidiData.scheduledEvents, selectedMidiFileIdx, targetMs);
+            }
+        }
+
+        function selectMidiFile(idx) {
+            if (idx < 0 || idx >= uploadedMidiFiles.length) return;
+            
+            if (midiPlaybackPlaying) {
+                stopLocalMidiPlayback();
+            }
+            
+            selectedMidiFileIdx = idx;
+            const file = uploadedMidiFiles[idx];
+            
+            if (!file.data) {
+                selectedMidiData = null;
+                selectedMidiDurationMs = 0;
+                midiPlaybackSeekMs = 0;
+                midiPlaybackCurrentIdx = 0;
+                showToast(`File "${file.name}" is offline. Re-upload it to preview timeline or play locally.`, 'warning');
+                
+                // Hide timeline
+                const card = document.getElementById('midiTimelineCard');
+                if (card) card.style.display = 'none';
+                
+                updateMidiListRowHighlight();
+                renderMidiRoutingTable();
+                return;
+            }
+            
+            try {
+                const parsed = parseMidiFile(file.data, file.trackChannelOverrides || {});
+                selectedMidiData = parsed;
+                selectedMidiDurationMs = parsed.durationMs;
+                midiPlaybackSeekMs = 0;
+                midiPlaybackCurrentIdx = 0;
+                
+                // Auto-load overrides from MIDI program changes or defaults
+                if (parsed.tracks) {
+                    parsed.tracks.forEach(track => {
+                        const pcEvt = track.events.find(e => e.type === 'programChange');
+                        if (pcEvt) {
+                            const bankSelectEvt = track.events.find(e => e.type === 'bankSelect' && e.channel === pcEvt.channel && e.timeMs <= pcEvt.timeMs);
+                            let bank = pcEvt.channel === 9 ? 128 : 0;
+                            if (bankSelectEvt) {
+                                bank = bankSelectEvt.value;
+                            }
+                            
+                            if (parsedData && parsedData.presets) {
+                                let presetIdx = parsedData.presets.findIndex(p => p.preset === pcEvt.program && p.bank === bank);
+                                if (presetIdx === -1) {
+                                    presetIdx = parsedData.presets.findIndex(p => p.preset === pcEvt.program);
+                                }
+                                
+                                if (presetIdx !== -1) {
+                                    const globalOverrideSelect = document.getElementById(`midiOverrideCh${pcEvt.channel + 1}`);
+                                    if (globalOverrideSelect) {
+                                        globalOverrideSelect.value = presetIdx;
+                                        globalOverrideSelect.dispatchEvent(new Event('change'));
+                                    }
+                                }
+                            }
+                        } else if (parsedData && parsedData.presets) {
+                            // Default to matching track channel index in the SoundFont
+                            let presetIdx = getDefaultPresetIndexForChannel(track.channel);
+                            if (presetIdx !== -1) {
+                                const globalOverrideSelect = document.getElementById(`midiOverrideCh${track.channel + 1}`);
+                                if (globalOverrideSelect) {
+                                    globalOverrideSelect.value = presetIdx;
+                                    globalOverrideSelect.dispatchEvent(new Event('change'));
+                                }
+                            }
+                        }
+                    });
+                }
+                
+                const card = document.getElementById('midiTimelineCard');
+                if (card) card.style.display = 'flex';
+                
+                const fileLabel = document.getElementById('timelineSelectedFileName');
+                if (fileLabel) fileLabel.textContent = file.name;
+                
+                renderTimelineTracks();
+                updatePolyphonyWarning(parsed.scheduledEvents);
+                updatePlayheadPosition();
+                updateTimelinePlayBtnLabel();
+                updateMidiListRowHighlight();
+                renderMidiRoutingTable();
+                
+            } catch (err) {
+                showToast('Error loading MIDI file: ' + err.message, 'error');
+            }
+        }
+
+        function updateMidiListRowHighlight() {
+            const rows = midiListContainer.querySelectorAll('.midi-file-row');
+            rows.forEach((row, idx) => {
+                if (idx === selectedMidiFileIdx) {
+                    row.style.background = 'rgba(255, 144, 0, 0.15)';
+                    row.style.borderColor = 'var(--accent)';
+                } else {
+                    row.style.background = 'rgba(255,255,255,0.03)';
+                    row.style.borderColor = 'var(--border)';
+                }
+            });
+        }
+
+        function renderTimelineTracks() {
+            const container = document.getElementById('timelineTracksContainer');
+            if (!container || !selectedMidiData) return;
+            
+            const file = selectedMidiFileIdx !== -1 ? uploadedMidiFiles[selectedMidiFileIdx] : null;
+            
+            container.innerHTML = '';
+            
+            const hasPresets = parsedData && parsedData.presets && parsedData.presets.length > 0;
+            
+            let presetOptionsHtml = `<option value="-1">No Override</option>`;
+            if (hasPresets) {
+                const sortedPresets = parsedData.presets
+                    .map((p, idx) => ({ ...p, originalIndex: idx }))
+                    .sort((a, b) => {
+                        if (a.bank !== b.bank) return a.bank - b.bank;
+                        return a.preset - b.preset;
+                    });
+                sortedPresets.forEach(p => {
+                    const truncatedName = truncateInstrumentName(p.name, 14);
+                    presetOptionsHtml += `<option value="${p.originalIndex}">${truncatedName}</option>`;
+                });
+            } else {
+                presetOptionsHtml += `<option value="-1" disabled>— Load SoundFont —</option>`;
+            }
+            
+            selectedMidiData.tracks.forEach((track, index) => {
+                if (track.notesCount === 0 && (!track.name || track.name.toLowerCase().includes('tempo'))) {
+                    return; 
+                }
+                
+                const row = document.createElement('div');
+                row.className = 'timeline-track-row';
+                row.style.cssText = 'display: flex; align-items: center; border-bottom: 1px solid var(--border); background: rgba(0,0,0,0.1); height: 42px; position: relative;';
+                
+                // Column 1: Details
+                const colDetails = document.createElement('div');
+                colDetails.className = 'track-info';
+                colDetails.style.cssText = 'width: 150px; padding: 4px 10px; display: flex; align-items: center; gap: 8px; border-right: 1px solid var(--border); overflow: hidden; height: 100%;';
+                
+                const led = document.createElement('div');
+                led.className = 'channel-led led-dot green';
+                led.dataset.channel = track.channel;
+                led.style.cssText = 'width: 8px; height: 8px; flex-shrink: 0;';
+                
+                const textWrapper = document.createElement('div');
+                textWrapper.style.cssText = 'display: flex; flex-direction: column; overflow: hidden; justify-content: center;';
+                
+                const nameSpan = document.createElement('span');
+                nameSpan.style.cssText = 'font-size: 0.75rem; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text);';
+                nameSpan.textContent = track.name;
+                nameSpan.title = track.name;
+                
+                const metaSpan = document.createElement('span');
+                metaSpan.style.cssText = 'font-size: 0.65rem; color: var(--dim);';
+                metaSpan.textContent = `${track.notesCount} notes`;
+                
+                textWrapper.appendChild(nameSpan);
+                textWrapper.appendChild(metaSpan);
+                colDetails.appendChild(led);
+                colDetails.appendChild(textWrapper);
+                
+                // Column 2: Channel Dropdown Select
+                const colChannel = document.createElement('div');
+                colChannel.className = 'track-channel';
+                colChannel.style.cssText = 'width: 70px; padding: 4px 6px; display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--border); height: 100%;';
+                
+                const channelSelect = document.createElement('select');
+                channelSelect.className = 'mini-select track-channel-select';
+                channelSelect.style.cssText = 'width: 100%; font-size: 0.72rem; padding: 2px; height: 24px; text-align: center;';
+                
+                let chOptionsHtml = '';
+                for (let c = 0; c < 16; c++) {
+                    const label = c === 9 ? 'Ch 10 (Drums)' : `Ch ${c + 1}`;
+                    chOptionsHtml += `<option value="${c}">${label}</option>`;
+                }
+                channelSelect.innerHTML = chOptionsHtml;
+                channelSelect.value = track.channel;
+                
+                channelSelect.addEventListener('change', (e) => {
+                    const newCh = parseInt(e.target.value);
+                    const file = uploadedMidiFiles[selectedMidiFileIdx];
+                    if (!file) return;
+                    
+                    file.trackChannelOverrides = file.trackChannelOverrides || {};
+                    // Stable unique key for the override configuration
+                    const overrideKey = track.virtualChannel !== undefined ? `${track.trackIndex}_ch${track.originalChannel}` : `${track.trackIndex}`;
+                    file.trackChannelOverrides[overrideKey] = newCh;
+                    
+                    try {
+                        const parsed = parseMidiFile(file.data, file.trackChannelOverrides);
+                        selectedMidiData = parsed;
+                        
+                        if (midiPlaybackPlaying) {
+                            midiPlaybackEvents = parsed.scheduledEvents;
+                        }
+                        
+                        renderTimelineTracks();
+                        updatePolyphonyWarning(parsed.scheduledEvents);
+                        renderMidiRoutingTable();
+                        showToast(`Reassigned track to Channel ${newCh + 1}`, 'success');
+                    } catch (err) {
+                        showToast('Error reassigning track channel: ' + err.message, 'error');
+                    }
+                });
+                colChannel.appendChild(channelSelect);
+                
+                // Column 3: Routing & presets overrides
+                const colRouting = document.createElement('div');
+                colRouting.className = 'track-routing';
+                colRouting.style.cssText = 'width: 255px; padding: 4px 6px; display: flex; gap: 6px; border-right: 1px solid var(--border); align-items: center; height: 100%;';
+                
+                const targetSelect = document.createElement('select');
+                targetSelect.className = 'mini-select track-target-select';
+                targetSelect.dataset.channel = track.channel;
+                targetSelect.style.cssText = 'width: 100px; font-size: 0.72rem; padding: 2px 4px; height: 24px;';
+                targetSelect.innerHTML = `
+                    <option value="0">Synth 1</option>
+                    <option value="1">Synth 2</option>
+                    <option value="2">CV1</option>
+                    <option value="3">CV2</option>
+                    <option value="4">Muted</option>
+                    <option value="5">Synth 1 + CV1</option>
+                    <option value="6">Synth 2 + CV2</option>
+                `;
+                
+                const globalTargetSelect = document.getElementById(`midiTargetCh${track.channel + 1}`);
+                targetSelect.value = globalTargetSelect ? globalTargetSelect.value : (track.channel === 0 ? "2" : (track.channel === 1 ? "3" : (track.channel === 9 ? "1" : "0")));
+                
+                const overrideSelect = document.createElement('select');
+                overrideSelect.className = 'mini-select track-override-select';
+                overrideSelect.dataset.channel = track.channel;
+                overrideSelect.style.cssText = 'flex-grow: 1; font-size: 0.72rem; padding: 2px 4px; height: 24px; max-width: 135px;';
+                overrideSelect.innerHTML = presetOptionsHtml;
+                
+                overrideSelect.value = (file && file.channelOverrides) ? file.channelOverrides[track.channel] : getDefaultPresetIndexForChannel(track.channel);
+                
+                targetSelect.addEventListener('change', (e) => {
+                    const val = parseInt(e.target.value);
+                    if (file) {
+                        file.channelTargets[track.channel] = val;
+                    }
+                    document.querySelectorAll(`.track-target-select[data-channel="${track.channel}"]`).forEach(sel => sel.value = val);
+                    
+                    const backingTarget = document.getElementById(`midiTargetCh${track.channel + 1}`);
+                    if (backingTarget) {
+                        backingTarget.value = val;
+                    }
+                    
+                    const badge = document.getElementById(`midiPadBadgeCh${track.channel + 1}`);
+                    if (badge) {
+                        badge.textContent = getTargetAbbrev(val);
+                    }
+                    
+                    if (selectedRoutingChannelIdx === track.channel) {
+                        const stripTarget = document.getElementById('midiStripTargetSelect');
+                        if (stripTarget) stripTarget.value = val;
+                    }
+                    
+                    redrawAllTimelineTracks();
+                });
+                
+                overrideSelect.addEventListener('change', (e) => {
+                    const val = parseInt(e.target.value);
+                    if (file) {
+                        file.channelOverrides[track.channel] = val;
+                    }
+                    document.querySelectorAll(`.track-override-select[data-channel="${track.channel}"]`).forEach(sel => sel.value = val);
+                    
+                    const backingOverride = document.getElementById(`midiOverrideCh${track.channel + 1}`);
+                    if (backingOverride) {
+                        backingOverride.value = val;
+                    }
+                    
+                    const presetLabel = document.querySelector(`#midiChannelPadCh${track.channel + 1} .midi-pad-preset-label`);
+                    if (presetLabel) {
+                        let presetName = 'No Preset';
+                        let isDefault = false;
+                        let pIdx = val;
+                        if (pIdx === -1) {
+                            pIdx = getDefaultPresetIndexForChannel(track.channel);
+                            isDefault = true;
+                        }
+                        if (hasPresets && pIdx >= 0 && pIdx < parsedData.presets.length) {
+                            const truncatedName = truncateInstrumentName(parsedData.presets[pIdx].name, 10);
+                            presetName = truncatedName + (isDefault ? ' (d)' : '');
+                        } else {
+                            presetName = presetName + (isDefault ? ' (d)' : '');
+                        }
+                        presetLabel.textContent = presetName;
+                        presetLabel.style.color = isDefault ? 'var(--dim)' : 'var(--accent)';
+                    }
+                    
+                    if (selectedRoutingChannelIdx === track.channel) {
+                        const stripOverride = document.getElementById('midiStripOverrideSelect');
+                        if (stripOverride) stripOverride.value = val;
+                    }
+                });
+                
+                colRouting.appendChild(targetSelect);
+                colRouting.appendChild(overrideSelect);
+                
+                const colCanvas = document.createElement('div');
+                colCanvas.className = 'track-canvas-wrapper';
+                colCanvas.style.cssText = 'flex-grow: 1; height: 100%; position: relative; background: rgba(0,0,0,0.15); display: flex; align-items: center;';
+                
+                const canvas = document.createElement('canvas');
+                canvas.className = 'track-canvas';
+                canvas.style.cssText = 'width: 100%; height: 100%; display: block;';
+                canvas.trackData = track;
+                
+                colCanvas.appendChild(canvas);
+                
+                row.appendChild(colDetails);
+                row.appendChild(colChannel);
+                row.appendChild(colRouting);
+                row.appendChild(colCanvas);
+                container.appendChild(row);
+                
+                setTimeout(() => {
+                    const rect = canvas.getBoundingClientRect();
+                    canvas.width = rect.width || 800;
+                    canvas.height = 42;
+                    drawTrackTimeline(track, canvas, selectedMidiData.durationMs);
+                }, 10);
+            });
+            
+            renderTimelineRulerLabels();
+        }
+
+        function renderTimelineRulerLabels() {
+            const labelsContainer = document.getElementById('timelineRulerLabels');
+            if (!labelsContainer || !selectedMidiData) return;
+            labelsContainer.innerHTML = '';
+            
+            const durationMs = selectedMidiData.durationMs;
+            const seconds = Math.ceil(durationMs / 1000);
+            
+            let step = 10;
+            if (seconds > 120) step = 30;
+            if (seconds > 300) step = 60;
+            
+            for (let t = 0; t <= seconds; t += step) {
+                const label = document.createElement('span');
+                label.textContent = formatTime(t * 1000);
+                const pct = (t * 1000) / durationMs;
+                if (pct <= 1.0) {
+                    label.style.position = 'absolute';
+                    label.style.left = `calc(${pct * 100}% - 15px)`;
+                    labelsContainer.appendChild(label);
+                }
+            }
+        }
+
+        function drawTrackTimeline(track, canvas, durationMs) {
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+            
+            // Draw dark background
+            ctx.fillStyle = '#050c09';
+            ctx.fillRect(0, 0, width, height);
+            
+            // Draw grid lines
+            ctx.strokeStyle = 'rgba(0, 255, 136, 0.04)';
+            ctx.lineWidth = 1;
+            for (let i = 1; i < 10; i++) {
+                const x = (i / 10) * width;
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, height);
+                ctx.stroke();
+            }
+            
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.02)';
+            ctx.beginPath();
+            ctx.moveTo(0, height * 0.33);
+            ctx.lineTo(width, height * 0.33);
+            ctx.moveTo(0, height * 0.66);
+            ctx.lineTo(width, height * 0.66);
+            ctx.stroke();
+            
+            const notes = track.events.filter(e => e.type === 'noteOn');
+            if (notes.length === 0) return;
+            
+            let minNote = 127;
+            let maxNote = 0;
+            notes.forEach(n => {
+                if (n.note < minNote) minNote = n.note;
+                if (n.note > maxNote) maxNote = n.note;
+            });
+            
+            if (maxNote === minNote) {
+                minNote = Math.max(0, minNote - 6);
+                maxNote = Math.min(127, maxNote + 6);
+            } else {
+                minNote = Math.max(0, minNote - 2);
+                maxNote = Math.min(127, maxNote + 2);
+            }
+            
+            const targetSelect = document.getElementById(`midiTargetCh${track.channel + 1}`);
+            const target = targetSelect ? parseInt(targetSelect.value) : 0;
+            let noteColor = '#00ff88'; // green
+            if (target === 2 || target === 3) {
+                noteColor = '#ffaa00'; // amber
+            } else if (target === 4) {
+                noteColor = '#556070'; // muted blue-gray
+            }
+            
+            ctx.save();
+            ctx.shadowBlur = 4;
+            ctx.shadowColor = noteColor;
+            ctx.fillStyle = noteColor;
+            
+            notes.forEach(noteOn => {
+                const noteOff = track.events.find(e => e.type === 'noteOff' && e.note === noteOn.note && e.timeMs >= noteOn.timeMs);
+                const endTimeMs = noteOff ? noteOff.timeMs : (noteOn.timeMs + 200);
+                
+                const x1 = (noteOn.timeMs / (durationMs || 1000)) * width;
+                const x2 = (endTimeMs / (durationMs || 1000)) * width;
+                const w = Math.max(3, x2 - x1);
+                
+                const pct = (noteOn.note - minNote) / (maxNote - minNote);
+                const y = height - 5 - pct * (height - 10);
+                
+                ctx.fillRect(x1, y, w, 3);
+            });
+            
+            ctx.restore();
+        }
+
+        function redrawAllTimelineTracks() {
+            document.querySelectorAll('.track-canvas').forEach(canvas => {
+                if (canvas.trackData && selectedMidiData) {
+                    drawTrackTimeline(canvas.trackData, canvas, selectedMidiData.durationMs);
+                }
+            });
+        }
+
+        function formatTime(ms) {
+            const totalSeconds = ms / 1000;
+            const m = Math.floor(totalSeconds / 60);
+            const s = Math.floor(totalSeconds % 60);
+            const cs = Math.floor((ms % 1000) / 10);
+            return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}`;
         }
 
         function playLocalNoteFromMidi(midi, velocity, channel) {
@@ -3507,14 +4722,62 @@
             const voiceKey = `${channel}-${midi}`;
             stopLocalVoiceByKey(voiceKey);
 
-            if (activeSf2Buffer && parsedData && parsedPresetZones) {
-                let activePresetIdx = -1;
-                let isDrumCh = (channel === 9);
-                
-                if (isDrumCh) {
-                    activePresetIdx = parsedData.presets.findIndex(p => p.bank === 128);
+            const targetSelect = document.getElementById(`midiTargetCh${channel + 1}`);
+            const target = targetSelect ? parseInt(targetSelect.value) : (channel === 0 ? 2 : (channel === 1 ? 3 : (channel === 9 ? 1 : 0)));
+
+            if (target === 4) {
+                return;
+            }
+
+            updateChannelLed(channel, true);
+            if (channel === 9) {
+                setTimeout(() => {
+                    updateChannelLed(channel, false);
+                }, 150);
+            }
+
+            let oscVoice = null;
+            if (target === 2 || target === 3 || target === 5 || target === 6) {
+                const osc = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(440 * Math.pow(2, (midi - 69) / 12), audioCtx.currentTime);
+                const now = audioCtx.currentTime;
+                gainNode.gain.setValueAtTime(0, now);
+                gainNode.gain.linearRampToValueAtTime(0.04, now + 0.005);
+                osc.connect(gainNode).connect(audioCtx.destination);
+                osc.start(now);
+                oscVoice = { source: osc, gainNode, isSynthFallback: true };
+
+                if (channel === 9) {
+                    osc.stop(now + 0.25);
+                    gainNode.gain.setValueAtTime(0.04, now + 0.05);
+                    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.25);
                 }
+
+                if (target === 2 || target === 3) {
+                    enforcePolyphonyLimit(1);
+                    const voicesArr = [oscVoice];
+                    voicesArr.startTime = performance.now();
+                    activeVoices[voiceKey] = voicesArr;
+                    if (channel === 9) {
+                        setTimeout(() => {
+                            if (activeVoices[voiceKey] === voicesArr) {
+                                delete activeVoices[voiceKey];
+                            }
+                        }, 250);
+                    }
+                    return;
+                }
+            }
+
+            if (activeSf2Buffer && parsedData && parsedPresetZones) {
+                const overrideSelect = document.getElementById(`midiOverrideCh${channel + 1}`);
+                let activePresetIdx = overrideSelect ? parseInt(overrideSelect.value) : -1;
                 
+                if (activePresetIdx === -1) {
+                    activePresetIdx = getDefaultPresetIndexForChannel(channel);
+                }
                 if (activePresetIdx === -1) {
                     activePresetIdx = parseInt(document.getElementById('kbProgramSelect').value);
                 }
@@ -3526,7 +4789,10 @@
                     ) || [];
 
                     if (matchingZones.length > 0) {
-                        const voices = [];
+                        const newVoicesCount = matchingZones.length + (oscVoice ? 1 : 0);
+                        enforcePolyphonyLimit(newVoicesCount);
+
+                        const voices = oscVoice ? [oscVoice] : [];
                         matchingZones.forEach(zone => {
                             const buffer = getDecodedBuffer(zone.sampleID);
                             if (!buffer) return;
@@ -3556,13 +4822,26 @@
                             const maxGain = (velocity / 127.0) * 0.35;
                             gainNode.gain.linearRampToValueAtTime(maxGain, now + 0.005);
 
+                            const voice = { source, gainNode, sampleID: zone.sampleID };
+                            source.onended = () => {
+                                if (activeVoices[voiceKey]) {
+                                    const idx = activeVoices[voiceKey].indexOf(voice);
+                                    if (idx !== -1) {
+                                        activeVoices[voiceKey].splice(idx, 1);
+                                    }
+                                    if (activeVoices[voiceKey].length === 0) {
+                                        delete activeVoices[voiceKey];
+                                    }
+                                }
+                            };
                             source.connect(gainNode).connect(audioCtx.destination);
                             source.start(now);
 
-                            voices.push({ source, gainNode, sampleID: zone.sampleID });
+                            voices.push(voice);
                         });
 
                         if (voices.length > 0) {
+                            voices.startTime = performance.now();
                             activeVoices[voiceKey] = voices;
                         }
                         return;
@@ -3570,51 +4849,170 @@
                 }
             }
 
-            const osc = audioCtx.createOscillator();
-            const gainNode = audioCtx.createGain();
+            // Fallback (if SoundFont failed or preset zones not found)
+            if (oscVoice) {
+                enforcePolyphonyLimit(1);
+                const voicesArr = [oscVoice];
+                voicesArr.startTime = performance.now();
+                activeVoices[voiceKey] = voicesArr;
+            } else {
+                enforcePolyphonyLimit(1);
+                const osc = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
 
-            osc.type = 'triangle';
-            osc.frequency.setValueAtTime(440 * Math.pow(2, (midi - 69) / 12), audioCtx.currentTime);
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(440 * Math.pow(2, (midi - 69) / 12), audioCtx.currentTime);
 
-            const now = audioCtx.currentTime;
-            gainNode.gain.setValueAtTime(0, now);
-            const targetGain = (velocity / 127.0) * 0.15;
-            gainNode.gain.linearRampToValueAtTime(targetGain, now + 0.01);
+                const now = audioCtx.currentTime;
+                gainNode.gain.setValueAtTime(0, now);
+                const targetGain = (velocity / 127.0) * 0.15;
+                gainNode.gain.linearRampToValueAtTime(targetGain, now + 0.01);
 
-            osc.connect(gainNode).connect(audioCtx.destination);
-            osc.start(now);
+                osc.connect(gainNode).connect(audioCtx.destination);
+                osc.start(now);
 
-            activeVoices[voiceKey] = [{ source: osc, gainNode, isSynthFallback: true }];
+                const fallbackVoices = [{ source: osc, gainNode, isSynthFallback: true }];
+                fallbackVoices.startTime = performance.now();
+                activeVoices[voiceKey] = fallbackVoices;
+
+                if (channel === 9) {
+                    osc.stop(now + 0.25);
+                    gainNode.gain.setValueAtTime(targetGain, now + 0.05);
+                    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.25);
+                    setTimeout(() => {
+                        if (activeVoices[voiceKey] === fallbackVoices) {
+                            delete activeVoices[voiceKey];
+                        }
+                    }, 250);
+                }
+            }
         }
 
         function stopLocalNoteFromMidi(midi, channel) {
+            if (channel === 9) return; // Drum channel ignores Note Off
             const voiceKey = `${channel}-${midi}`;
-            stopLocalVoiceByKey(voiceKey);
+            stopVoiceByKey(voiceKey);
         }
 
         function stopLocalVoiceByKey(voiceKey) {
-            const voices = activeVoices[voiceKey];
-            if (!voices || !audioCtx) return;
-
-            const now = audioCtx.currentTime;
-            voices.forEach(voice => {
-                try {
-                    const currentGain = voice.gainNode.gain.value || 0.15;
-                    voice.gainNode.gain.setValueAtTime(currentGain, now);
-                    
-                    if (voice.isSynthFallback) {
-                        voice.gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
-                        voice.source.stop(now + 0.15);
-                    } else {
-                        voice.gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.06);
-                        voice.source.stop(now + 0.06);
-                    }
-                } catch (e) {}
-            });
-            delete activeVoices[voiceKey];
+            stopVoiceByKey(voiceKey);
         }
 
-        // Toggle Local Preview button listener
+        function updateChannelLed(channel, active) {
+            if (active) {
+                channelNoteCounts[channel]++;
+            } else {
+                channelNoteCounts[channel] = Math.max(0, channelNoteCounts[channel] - 1);
+            }
+            
+            const leds = document.querySelectorAll(`.channel-led[data-channel="${channel}"]`);
+            leds.forEach(led => {
+                if (channelNoteCounts[channel] > 0) {
+                    led.classList.add('active');
+                } else {
+                    led.classList.remove('active');
+                }
+            });
+        }
+
+        window.addEventListener('resize', () => {
+            if (selectedMidiData && selectedMidiFileIdx !== -1) {
+                renderTimelineTracks();
+            }
+        });
+
+        setTimeout(() => {
+            const timelineRuler = document.getElementById('timelineRuler');
+            if (timelineRuler) {
+                timelineRuler.addEventListener('click', (e) => {
+                    const rect = timelineRuler.getBoundingClientRect();
+                    const clickX = e.clientX - rect.left;
+                    const pct = Math.min(1, Math.max(0, clickX / rect.width));
+                    seekToPercentage(pct);
+                });
+                
+                let isDraggingRuler = false;
+                timelineRuler.addEventListener('mousedown', (e) => {
+                    isDraggingRuler = true;
+                    e.preventDefault();
+                });
+                window.addEventListener('mousemove', (e) => {
+                    if (!isDraggingRuler) return;
+                    const rect = timelineRuler.getBoundingClientRect();
+                    const clickX = e.clientX - rect.left;
+                    const pct = Math.min(1, Math.max(0, clickX / rect.width));
+                    seekToPercentage(pct);
+                });
+                window.addEventListener('mouseup', () => {
+                    isDraggingRuler = false;
+                });
+            }
+
+            const tracksOuter = document.getElementById('timelineTracksContainerOuter');
+            if (tracksOuter) {
+                tracksOuter.addEventListener('click', (e) => {
+                    if (e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON' ||
+                        e.target.closest('.track-info') || e.target.closest('.track-routing') || e.target.closest('.track-channel')) {
+                        return;
+                    }
+                    
+                    const rect = tracksOuter.getBoundingClientRect();
+                    const clickX = e.clientX - rect.left;
+                    const canvasStart = 475; // 150 + 70 + 255
+                    const canvasWidth = rect.width - canvasStart;
+                    
+                    if (clickX >= canvasStart && canvasWidth > 0) {
+                        const pct = Math.min(1, Math.max(0, (clickX - canvasStart) / canvasWidth));
+                        seekToPercentage(pct);
+                    }
+                });
+            }
+
+            const playBtn = document.getElementById('timelinePlayBtn');
+            if (playBtn) {
+                playBtn.addEventListener('click', () => {
+                    if (!selectedMidiData) return;
+                    if (midiPlaybackPlaying) {
+                        midiPlaybackPlaying = false;
+                        if (midiPlaybackTimer) {
+                            cancelAnimationFrame(midiPlaybackTimer);
+                            midiPlaybackTimer = null;
+                        }
+                        localPanic();
+                        updateMidiPlayUI();
+                    } else {
+                        startLocalMidiPlayback(selectedMidiData.scheduledEvents, selectedMidiFileIdx, midiPlaybackSeekMs);
+                    }
+                });
+            }
+
+            const stopBtn = document.getElementById('timelineStopBtn');
+            if (stopBtn) {
+                stopBtn.addEventListener('click', () => {
+                    stopLocalMidiPlayback();
+                    midiPlaybackSeekMs = 0;
+                    midiPlaybackCurrentIdx = 0;
+                    updatePlayheadPosition();
+                });
+            }
+
+            const loopBtn = document.getElementById('timelineLoopBtn');
+            if (loopBtn) {
+                loopBtn.addEventListener('click', () => {
+                    timelineLoopEnabled = !timelineLoopEnabled;
+                    if (timelineLoopEnabled) {
+                        loopBtn.innerHTML = '🔁 LOOP: ON';
+                        loopBtn.classList.add('active');
+                        loopBtn.style.borderColor = 'var(--accent)';
+                    } else {
+                        loopBtn.innerHTML = '🔁 LOOP: OFF';
+                        loopBtn.classList.remove('active');
+                        loopBtn.style.borderColor = '';
+                    }
+                });
+            }
+        }, 100);
+
         document.getElementById('localPreviewBtn').addEventListener('click', () => {
             localPreviewEnabled = !localPreviewEnabled;
             const btn = document.getElementById('localPreviewBtn');
@@ -3636,5 +5034,12 @@
             }
         });
     </script>
+        </div> <!-- .rack-faceplate -->
+        <div class="rack-ear right">
+            <div class="bolt"></div>
+            <div class="bolt"></div>
+            <div class="bolt"></div>
+        </div>
+    </div> <!-- .rack-chassis -->
 </body>
 </html>
